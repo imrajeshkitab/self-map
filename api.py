@@ -18,6 +18,9 @@ import sqlite3
 import os
 
 from search import semantic_search, trinity_search
+from prashna import compute_chart
+from narrate import cosmic_pulse
+import datetime as _dt
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
 
@@ -114,6 +117,31 @@ def list_zodiac():
     data = _rows_to_dicts(cur, cur.fetchall())
     conn.close()
     return {"count": len(data), "items": data}
+
+
+@app.get("/today")
+def today(
+    lat: float = Query(17.4399, description="Latitude (default: Gachibowli, Hyderabad)"),
+    lon: float = Query(78.3489, description="Longitude (default: Gachibowli, Hyderabad)"),
+    place: str = Query("Gachibowli, Hyderabad, India", description="Display name for the location"),
+    when: str | None = Query(None, description="ISO 8601 datetime; defaults to 'now' UTC"),
+    pulse: bool = Query(True, description="Include the LLM/template cosmic pulse summary"),
+):
+    """
+    Live Vedic chart for the current moment (or a given moment) at a given place.
+    No personal data required.
+    """
+    dt_obj = None
+    if when:
+        try:
+            dt_obj = _dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            return {"error": f"Bad datetime: {when}"}
+
+    chart = compute_chart(when=dt_obj, lat=lat, lon=lon, place=place)
+    if pulse:
+        chart["pulse"] = cosmic_pulse(chart)
+    return chart
 
 
 @app.get("/search")

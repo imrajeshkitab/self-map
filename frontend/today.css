@@ -1,0 +1,363 @@
+/* ============ Today's Sky page ============ */
+
+#today-root { width: 100%; display: flex; flex-direction: column; gap: 1.25rem; }
+
+/* ---------- Control bar ---------- */
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.7rem 1rem;
+    background: rgba(10, 11, 22, 0.7);
+    border: 1px solid var(--border-glass);
+    border-radius: 14px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    width: 100%;
+}
+.ctrl-group {
+    display: flex;
+    gap: 0.65rem;
+    align-items: flex-end;
+    flex-wrap: wrap;
+}
+.controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.controls input, .controls select {
+    background: rgba(15, 17, 35, 0.9);
+    border: 1px solid var(--border-glass);
+    color: var(--text-main);
+    padding: 0.5rem 0.7rem;
+    border-radius: 8px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.9rem;
+    color-scheme: dark;
+    transition: border-color 0.2s ease;
+}
+.controls input:focus, .controls select:focus {
+    outline: none;
+    border-color: var(--accent-purple);
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25);
+}
+.controls input[type="number"] { width: 95px; }
+
+.custom-coords { display: flex; gap: 0.4rem; align-items: flex-end; }
+
+.ctrl-buttons button {
+    background: rgba(139, 92, 246, 0.15);
+    border: 1px solid rgba(139, 92, 246, 0.4);
+    color: var(--text-main);
+    padding: 0.55rem 0.95rem;
+    border-radius: 8px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.ctrl-buttons button:hover {
+    background: rgba(139, 92, 246, 0.25);
+    border-color: var(--accent-purple);
+}
+
+/* ---------- Top grid: Lagna + Pulse side-by-side ---------- */
+.top-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 1rem;
+    align-items: stretch;
+}
+@media (max-width: 900px) {
+    .top-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- Lagna strip ---------- */
+.lagna-strip {
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(212, 175, 55, 0.10));
+    border: 1px solid rgba(212, 175, 55, 0.25);
+    border-radius: 12px;
+    padding: 0.95rem 1.15rem;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(139, 92, 246, 0.1);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.lagna-strip .lagna-label {
+    font-family: 'Cinzel', serif;
+    font-size: 0.85rem;
+    letter-spacing: 0.15em;
+    color: var(--accent-gold);
+    text-transform: uppercase;
+    margin-bottom: 0.4rem;
+}
+.lagna-strip .lagna-main {
+    font-size: 0.95rem;
+    color: var(--text-main);
+    line-height: 1.55;
+}
+.lagna-strip strong { color: var(--accent-gold); }
+.lagna-strip em { color: var(--accent-purple); font-style: normal; font-weight: 500; }
+.lagna-strip .badge { font-size: 0.85rem; }
+
+/* ---------- Pulse card ---------- */
+.pulse-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-left: 3px solid var(--accent-purple);
+    border-radius: 12px;
+    padding: 0.9rem 1.1rem;
+    font-size: 0.9rem;
+    color: var(--text-main);
+    line-height: 1.55;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.pulse-card .pulse-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    color: var(--accent-purple);
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+}
+.pulse-card .pulse-source {
+    display: inline-block;
+    margin-left: 0.5rem;
+    font-size: 0.65rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--accent-purple);
+    letter-spacing: 0.08em;
+}
+
+/* ---------- Two-column layouts ---------- */
+.today-grid {
+    display: grid;
+    grid-template-columns: 440px minmax(0, 1fr);
+    gap: 1.5rem;
+    align-items: start;
+}
+.extra-grid {
+    display: grid;
+    grid-template-columns: 440px minmax(0, 1fr);
+    gap: 1.5rem;
+    align-items: start;
+}
+@media (max-width: 980px) {
+    .today-grid, .extra-grid { grid-template-columns: 1fr; }
+}
+.chart-wrap { align-self: start; }
+
+.chart-caption { color: var(--text-muted); font-size: 0.85rem; margin: -0.5rem 0 1rem 0; }
+.section-heading-sm {
+    font-family: 'Cinzel', serif;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--accent-gold);
+    letter-spacing: 0.08em;
+    margin-bottom: 0.4rem;
+}
+.section-heading-sm .muted { color: var(--text-muted); font-weight: 400; font-size: 0.8rem; }
+
+/* ---------- South Indian Chart ---------- */
+.chart-sa {
+    aspect-ratio: 1 / 1;
+    width: 100%;
+    max-width: 420px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 2px;
+    background: rgba(212, 175, 55, 0.18);
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    border-radius: 10px;
+    padding: 2px;
+    margin: 0 auto;
+}
+.chart-cell {
+    background: rgba(15, 17, 35, 0.85);
+    padding: 0.45rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    overflow: hidden;
+    position: relative;
+}
+.chart-cell.center {
+    grid-column: span 2;
+    grid-row: span 2;
+    background: transparent;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Cinzel', serif;
+    color: rgba(212, 175, 55, 0.55);
+    font-size: 0.9rem;
+    letter-spacing: 0.15em;
+}
+.chart-cell .cell-house { font-size: 0.65rem; color: var(--text-muted); letter-spacing: 0.08em; font-weight: 600; }
+.chart-cell .cell-sign  { font-family: 'Cinzel', serif; font-size: 0.8rem; color: var(--accent-gold); margin-bottom: 0.15rem; }
+.chart-cell .cell-planets { display: flex; flex-wrap: wrap; gap: 0.2rem 0.35rem; font-size: 0.78rem; color: var(--text-main); }
+.cell-planet { white-space: nowrap; }
+.cell-planet sup { font-size: 0.55rem; opacity: 0.7; }
+.cell-planet.exalted     { color: #ffd966; font-weight: 600; }
+.cell-planet.debilitated { color: #f87171; }
+.cell-planet.own         { color: #86efac; }
+.chart-cell.has-lagna { box-shadow: inset 0 0 0 2px rgba(212, 175, 55, 0.65); }
+.chart-cell.has-lagna::after {
+    content: 'Asc';
+    position: absolute; top: 4px; right: 5px;
+    font-size: 0.55rem; color: var(--accent-gold); letter-spacing: 0.1em;
+}
+.chart-legend {
+    margin-top: 0.8rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    text-align: center;
+}
+
+/* ---------- Cosmic Weather list (2-column grid on wide screens) ---------- */
+.weather-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+}
+@media (max-width: 600px) {
+    .weather-list { grid-template-columns: 1fr; }
+}
+.weather-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: 10px;
+    transition: transform 0.15s ease, border-color 0.2s ease;
+}
+.weather-row:hover { transform: translateX(2px); border-color: rgba(139, 92, 246, 0.35); }
+.weather-row .w-main { display: flex; flex-direction: column; gap: 0.2rem; }
+.weather-row .w-top  { display: flex; align-items: center; gap: 0.5rem; }
+.weather-row .w-name {
+    font-family: 'Cinzel', serif;
+    font-size: 0.88rem;
+    color: var(--text-main);
+    letter-spacing: 0.04em;
+}
+.weather-row .w-loc { font-size: 0.75rem; color: var(--text-muted); }
+.weather-row .w-loc b { color: var(--text-main); font-weight: 500; }
+.weather-row .w-sub {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.1rem;
+}
+.state-badge {
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.state-exalted     { background: rgba(255, 217, 102, 0.15); color: #ffd966; box-shadow: 0 0 10px rgba(255,217,102,0.15); }
+.state-debilitated { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+.state-own         { background: rgba(134, 239, 172, 0.12); color: #86efac; }
+.state-neutral     { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); }
+
+.retro-tag {
+    font-size: 0.6rem; font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(139, 92, 246, 0.18);
+    color: var(--accent-purple);
+    letter-spacing: 0.1em;
+}
+.combust-tag { background: rgba(248, 113, 113, 0.18); color: #f87171; }
+
+.rel-chip {
+    display: inline-block;
+    font-size: 0.65rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+.rel-friend  { background: rgba(134, 239, 172, 0.12); color: #86efac; }
+.rel-enemy   { background: rgba(248, 113, 113, 0.12); color: #f87171; }
+.rel-own     { background: rgba(212, 175, 55, 0.12); color: #d4af37; }
+.rel-neutral { background: rgba(255, 255, 255, 0.06); color: var(--text-muted); }
+
+/* ---------- Dasha + Karakas cards ---------- */
+.dasha-card, .karakas-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: 12px;
+    padding: 1.1rem 1.25rem;
+}
+.dasha-hint { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.7rem; }
+.dasha-current-banner {
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(212, 175, 55, 0.10));
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    border-radius: 8px;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 0.7rem;
+    font-size: 0.9rem;
+}
+.dasha-current-banner strong { color: var(--accent-gold); }
+.dasha-current-banner .muted { color: var(--text-muted); font-size: 0.78rem; }
+
+.dasha-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.dasha-table th, .dasha-table td { padding: 0.4rem 0.5rem; text-align: left; color: var(--text-muted); }
+.dasha-table th {
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border-glass);
+}
+.dasha-table tbody tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+.dasha-table tbody tr.dasha-current { background: rgba(212, 175, 55, 0.05); }
+.dasha-table tbody tr.dasha-current td:first-child { color: var(--accent-gold); font-weight: 600; }
+
+.karakas-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.karaka-row {
+    display: grid;
+    grid-template-columns: 80px 90px 1fr auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    background: rgba(15, 17, 35, 0.6);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 8px;
+    font-size: 0.82rem;
+}
+.karaka-row .karaka-name   { font-family: 'Cinzel', serif; color: var(--accent-gold); letter-spacing: 0.04em; }
+.karaka-row .karaka-planet { color: var(--text-main); font-weight: 500; }
+.karaka-row .karaka-blurb  { color: var(--text-muted); font-size: 0.72rem; }
+.karaka-row .karaka-deg    { color: var(--text-muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+
+/* ---------- Footer meta ---------- */
+.chart-meta { text-align: center; color: var(--text-muted); font-size: 0.78rem; margin-top: 1rem; letter-spacing: 0.04em; }
+.chart-meta span { margin: 0 0.6rem; }
