@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vedic Astrology Explorer</title>
+    <meta name="description" content="Semantic search across Vedic astrology houses, planets, and zodiac signs.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=3">
+</head>
+<body>
+    <div class="background-effects">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <main class="container">
+        <header class="hero">
+            <nav class="top-nav">
+                <a href="browse.html">Browse all →</a>
+            </nav>
+            <h1>Cosmic Insight</h1>
+            <p class="subtitle">Discover the wisdom of Vedic Astrology</p>
+            
+            <div class="search-container">
+                <input type="text" id="search-input" placeholder="Ask about career, marriage, spirituality..." autocomplete="off">
+                <button id="search-btn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="quick-searches">
+                <span class="pill">wealth</span>
+                <span class="pill">relationships</span>
+                <span class="pill">health</span>
+                <span class="pill">spiritual growth</span>
+            </div>
+        </header>
+
+        <section id="loading" class="hidden">
+            <div class="spinner"></div>
+            <p>Consulting the stars...</p>
+        </section>
+
+        <section id="results-container" class="results-grid">
+            <!-- Results will be injected here by app.js -->
+        </section>
+        
+        <div id="no-results" class="hidden">
+            <p>The stars remain silent on this matter. Try another query.</p>
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
