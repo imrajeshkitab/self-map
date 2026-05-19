@@ -161,47 +161,110 @@ def _relation_to_sign(planet: str, sign_lord: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Vimshottari Dasha — main period only (first level), from Moon's nakshatra.
+# Vimshottari Dasha-Bhukti-Antara (DBA) — three nested levels from Moon's nakshatra.
+#   MD (Mahadasha)   — major period, years long
+#   AD (Antardasha)  — sub-period within MD, months long
+#   PD (Pratyantar)  — sub-sub-period within AD, days/weeks long
+# Each AD = (AD_years / 120) * MD_years.  Each PD = (PD_years / 120) * AD_years.
+# AD cycle starts from MD lord itself; PD cycle starts from AD lord itself.
 # ---------------------------------------------------------------------------
+
+YR = 365.25  # days per Vedic year (Julian year)
+
+
+def _walk_periods(parent_lord: str, parent_start: dt.datetime, parent_years: float,
+                  when_utc: dt.datetime, order: list[str]) -> tuple[list[dict], dict | None]:
+    """Walk the 9 sub-periods inside a parent period. Sub-cycle starts at parent_lord.
+    Returns (timeline, current_entry). Each sub-period's length is proportional to
+    the sub-lord's share of the 120-year cycle.
+    """
+    start_idx = order.index(parent_lord)
+    sub_lords = [order[(start_idx + i) % 9] for i in range(9)]
+    cursor = parent_start
+    timeline: list[dict] = []
+    current: dict | None = None
+    for sub_lord in sub_lords:
+        sub_yrs = DASHA_YEARS[sub_lord] / 120 * parent_years
+        sub_end = cursor + dt.timedelta(days=sub_yrs * YR)
+        is_current = cursor <= when_utc < sub_end
+        entry = {
+            "lord": sub_lord,
+            "starts": cursor.date().isoformat(),
+            "ends":   sub_end.date().isoformat(),
+            "years":  round(sub_yrs, 4),
+            "current": is_current,
+        }
+        if is_current:
+            remaining_days = (sub_end - when_utc).total_seconds() / 86400
+            entry["remaining_years"] = round(remaining_days / YR, 3)
+            entry["remaining_days"] = round(remaining_days, 1)
+            entry["_start_dt"] = cursor  # internal, stripped before return
+            current = entry
+        timeline.append(entry)
+        cursor = sub_end
+    return timeline, current
+
 
 def _vimshottari(moon_lon: float, when_utc: dt.datetime) -> dict:
     nak = _nakshatra_of(moon_lon)
-    start_lord = nak["lord"]
+    md_lord = nak["lord"]
     nak_size = 360 / 27
     fraction_done = nak["deg_in_nakshatra"] / nak_size  # 0..1 through this nakshatra
-    remaining_years = DASHA_YEARS[start_lord] * (1 - fraction_done)
+    md_remaining_years = DASHA_YEARS[md_lord] * (1 - fraction_done)
+    md_total_years = DASHA_YEARS[md_lord]
+    md_start = when_utc - dt.timedelta(days=(md_total_years - md_remaining_years) * YR)
 
-    # Walk forward through the 9-lord cycle.
     order = NAK_LORDS[:]
-    start_idx = order.index(start_lord)
-    cycle = [order[(start_idx + i) % 9] for i in range(9)]
 
-    timeline = []
-    cursor = when_utc + dt.timedelta(days=remaining_years * 365.25)
-    timeline.append({
-        "lord": start_lord,
-        "starts": (when_utc - dt.timedelta(days=(DASHA_YEARS[start_lord] - remaining_years) * 365.25)).date().isoformat(),
-        "ends":   cursor.date().isoformat(),
-        "years":  round(DASHA_YEARS[start_lord], 2),
-        "remaining_years": round(remaining_years, 2),
-        "current": True,
-    })
-    for lord in cycle[1:]:
+    # ---- Level 1: Mahadasha timeline (9 MDs from current onward) ----
+    md_start_idx = order.index(md_lord)
+    md_cycle = [order[(md_start_idx + i) % 9] for i in range(9)]
+    md_timeline: list[dict] = []
+    cursor = md_start
+    for i, lord in enumerate(md_cycle):
         yrs = DASHA_YEARS[lord]
-        nxt = cursor + dt.timedelta(days=yrs * 365.25)
-        timeline.append({
+        end = cursor + dt.timedelta(days=yrs * YR)
+        entry = {
             "lord": lord,
             "starts": cursor.date().isoformat(),
-            "ends":   nxt.date().isoformat(),
-            "years":  yrs,
-            "current": False,
-        })
-        cursor = nxt
+            "ends":   end.date().isoformat(),
+            "years":  round(yrs, 2),
+            "current": (i == 0),
+        }
+        if i == 0:
+            entry["remaining_years"] = round(md_remaining_years, 2)
+        md_timeline.append(entry)
+        cursor = end
+
+    # ---- Level 2: Antardashas within the current MD ----
+    ad_timeline, current_ad = _walk_periods(md_lord, md_start, md_total_years, when_utc, order)
+
+    # ---- Level 3: Pratyantars within the current AD ----
+    pd_timeline: list[dict] = []
+    current_pd = None
+    if current_ad is not None:
+        pd_timeline, current_pd = _walk_periods(
+            current_ad["lord"], current_ad["_start_dt"], current_ad["years"], when_utc, order
+        )
+
+    # Strip internal _start_dt before returning
+    for entry in ad_timeline:
+        entry.pop("_start_dt", None)
+    for entry in pd_timeline:
+        entry.pop("_start_dt", None)
+
     return {
         "moon_nakshatra": nak["name"],
-        "current_mahadasha": start_lord,
-        "remaining_years": round(remaining_years, 2),
-        "timeline": timeline,
+        "current_mahadasha": md_lord,
+        "remaining_years": round(md_remaining_years, 2),
+        "current_antardasha": current_ad["lord"] if current_ad else None,
+        "antardasha_remaining_years": current_ad["remaining_years"] if current_ad else None,
+        "antardasha_remaining_days": current_ad["remaining_days"] if current_ad else None,
+        "current_pratyantar": current_pd["lord"] if current_pd else None,
+        "pratyantar_remaining_days": current_pd["remaining_days"] if current_pd else None,
+        "timeline": md_timeline,
+        "antardasha_timeline": ad_timeline,
+        "pratyantar_timeline": pd_timeline,
     }
 
 
@@ -328,7 +391,10 @@ if __name__ == "__main__":
     c = compute_chart()
     # Show a compact summary
     print(f"Lagna: {c['lagna']['sign']} {c['lagna']['degree']}° · {c['lagna']['nakshatra']} (pada {c['lagna']['pada']})")
-    print(f"Current Mahadasha: {c['dasha']['current_mahadasha']} ({c['dasha']['remaining_years']} yrs remaining)")
+    d = c['dasha']
+    print(f"DBA: {d['current_mahadasha']} MD ({d['remaining_years']} yrs) / "
+          f"{d['current_antardasha']} AD ({d['antardasha_remaining_days']} days) / "
+          f"{d['current_pratyantar']} PD ({d['pratyantar_remaining_days']} days)")
     print()
     for p in c["planets"]:
         flags = []

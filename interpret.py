@@ -1,0 +1,687 @@
+"""
+interpret.py
+Q&A engine — answers life questions by reading the live Prashna chart.
+
+Pipeline:
+    1. Gemini classifies the question into a Vedic life-domain.
+    2. Deterministic map: domain → houses + natural karakas + chara karaka role.
+    3. Gather evidence from the chart for each relevant factor.
+    4. Score the evidence to produce a verdict.
+    5. Gemini synthesizes a 4-6 sentence Vedic reading.
+
+The structured chart is always the source of truth.
+LLM only does (a) intent classification and (b) prose synthesis.
+"""
+
+from __future__ import annotations
+import json
+import os
+from typing import Any
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+load_dotenv()
+GEMINI_MODEL = "gemini-2.0-flash"
+_configured = False
+
+
+def _configure_gemini() -> bool:
+    global _configured
+    if _configured:
+        return True
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        return False
+    genai.configure(api_key=key)
+    _configured = True
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 1. Question → Domain mapping (deterministic + LLM fallback)
+# ---------------------------------------------------------------------------
+
+DOMAIN_MAP: dict[str, dict] = {
+    "career":       {"houses": [10, 6, 1],  "naturals": ["Sun", "Saturn"],     "chara": "Amatya",  "label": "Career & profession"},
+    "marriage":     {"houses": [7, 2, 11],  "naturals": ["Venus", "Jupiter"],  "chara": "Dara",    "label": "Marriage & partnership"},
+    "wealth":       {"houses": [2, 11, 5],  "naturals": ["Jupiter", "Venus"],  "chara": "Amatya",  "label": "Wealth & finances"},
+    "education":    {"houses": [4, 5, 2],   "naturals": ["Mercury", "Jupiter"],"chara": "Putra",   "label": "Education & learning"},
+    "health":       {"houses": [1, 6, 8],   "naturals": ["Sun", "Mars"],       "chara": "Atma",    "label": "Health & vitality"},
+    "children":     {"houses": [5, 9],      "naturals": ["Jupiter"],           "chara": "Putra",   "label": "Children"},
+    "travel":       {"houses": [3, 9, 12],  "naturals": ["Rahu", "Moon"],      "chara": "Amatya",  "label": "Travel"},
+    "spirituality": {"houses": [9, 12, 8],  "naturals": ["Jupiter", "Ketu"],   "chara": "Atma",    "label": "Spirituality"},
+    "relationships":{"houses": [7, 11, 3],  "naturals": ["Venus", "Mercury"],  "chara": "Dara",    "label": "Relationships"},
+    "property":     {"houses": [4],         "naturals": ["Mars", "Moon"],      "chara": "Matri",   "label": "Property & home"},
+    "siblings":     {"houses": [3, 11],     "naturals": ["Mars", "Mercury"],   "chara": "Bhratri", "label": "Siblings"},
+    "parents":      {"houses": [4, 9],      "naturals": ["Moon", "Sun"],       "chara": "Matri",   "label": "Parents"},
+    "enemies":      {"houses": [6, 8],      "naturals": ["Mars", "Saturn"],    "chara": "Gnati",   "label": "Enemies & obstacles"},
+    "general":      {"houses": [1],         "naturals": ["Sun", "Moon"],       "chara": "Atma",    "label": "General life direction"},
+}
+
+# For each domain, what does each house *mean for this question*?
+# Used to help the LLM interpret DBA lord placements specifically
+# (e.g. "Mercury PD in your 7th — contracts — directly relevant to a job offer"
+#  instead of generic "Mercury says communication matters").
+# If a house isn't listed for a domain, GENERIC_HOUSE_MEANING is used.
+GENERIC_HOUSE_MEANING = {
+    1:  "you yourself — body, identity",
+    2:  "earnings, family, speech",
+    3:  "courage, siblings, short journeys",
+    4:  "home, mother, comfort, roots",
+    5:  "creativity, intelligence, romance, children",
+    6:  "daily effort, obstacles, health, debts",
+    7:  "partner, contracts, the other person",
+    8:  "secrets, transformation, sudden events",
+    9:  "dharma, luck, father, long journeys",
+    10: "career, status, public role",
+    11: "gains, network, hopes fulfilled",
+    12: "loss, foreign lands, spirituality, expenses",
+}
+
+HOUSE_MEANING_FOR_DOMAIN: dict[str, dict[int, str]] = {
+    "career": {
+        1:  "you yourself — the seat of the question",
+        6:  "the daily grind — effort and competition for this role",
+        7:  "contracts and agreements — directly relevant to a job offer",
+        10: "career and status — the primary house for this question",
+        11: "gains and professional network — career-adjacent",
+    },
+    "marriage": {
+        2:  "family lineage and what you bring to the union",
+        5:  "romance and emotional attraction",
+        7:  "partner and marriage — the primary house here",
+        8:  "shared resources, intimacy, hidden aspects of the union",
+        11: "social network — friends who shape the match",
+    },
+    "wealth": {
+        2:  "earnings and accumulated wealth — primary house",
+        5:  "investments, speculation, sudden gains",
+        9:  "fortune and blessings that bring wealth",
+        11: "income from many sources — primary support",
+    },
+    "health": {
+        1:  "the body itself — primary house for health",
+        6:  "illness and recovery — the disease house",
+        8:  "chronic conditions, surgery, sudden events",
+        12: "hospitalization, sleep, isolation",
+    },
+    "education": {
+        2:  "memory and retention",
+        4:  "schooling and the early learning environment",
+        5:  "intelligence and creative learning — primary",
+        9:  "higher education, philosophy, mentors",
+    },
+    "children": {
+        5:  "children and creativity — the primary house",
+        9:  "blessings of progeny",
+        2:  "family expansion",
+    },
+    "travel": {
+        3:  "short journeys",
+        9:  "long journeys and pilgrimage",
+        12: "foreign lands and overseas settlement",
+    },
+    "relationships": {
+        3:  "the immediate circle — friends, courage to connect",
+        7:  "the partner — primary house",
+        11: "social network and shared joy",
+    },
+    "spirituality": {
+        9:  "dharma and the path of wisdom — primary",
+        12: "moksha, retreat, surrender",
+        8:  "transformation, deep inner work",
+    },
+    "property": {
+        4:  "the home itself — primary house",
+        2:  "the value of what you own",
+    },
+    "siblings": {
+        3:  "siblings and courage — primary house",
+        11: "elder siblings and gains through them",
+    },
+    "parents": {
+        4:  "mother",
+        9:  "father",
+    },
+    "enemies": {
+        6:  "open enemies, lawsuits, debts — primary house",
+        8:  "hidden enemies, betrayal",
+    },
+    "general": {
+        1:  "you yourself — the seat of the question",
+    },
+}
+
+
+def _house_meaning(domain: str, house: int) -> str:
+    """Return what `house` means for `domain` — domain-specific if defined, else generic."""
+    domain_map = HOUSE_MEANING_FOR_DOMAIN.get(domain, {})
+    return domain_map.get(house) or GENERIC_HOUSE_MEANING.get(house, f"{house}th house themes")
+
+
+# Fallback keyword classifier when LLM is unavailable.
+_KEYWORDS = {
+    "career":       ["career", "job", "work", "promotion", "business", "profession", "office"],
+    "marriage":     ["marriage", "married", "wedding", "spouse", "wife", "husband"],
+    "wealth":       ["money", "wealth", "rich", "income", "earnings", "salary", "finance"],
+    "education":    ["study", "exam", "college", "education", "degree", "learn"],
+    "health":       ["health", "sick", "disease", "anxious", "depression", "body"],
+    "children":     ["child", "children", "baby", "pregnancy", "kids"],
+    "travel":       ["travel", "trip", "journey", "abroad", "foreign"],
+    "spirituality": ["spiritual", "moksha", "god", "meditation", "guru", "dharma"],
+    "relationships":["relationship", "love", "girlfriend", "boyfriend", "partner", "dating"],
+    "property":     ["house", "property", "land", "home", "real estate", "vehicle"],
+    "siblings":     ["sibling", "brother", "sister"],
+    "parents":      ["father", "mother", "parent", "dad", "mom"],
+    "enemies":      ["enemy", "enemies", "lawsuit", "court", "litigation", "debt"],
+}
+
+
+def classify_question(question: str) -> dict:
+    """Return {'domain': str, 'source': 'llm'|'keyword'|'fallback', 'reason': str}."""
+    # First, LLM (best at picking up paraphrase).
+    if _configure_gemini():
+        try:
+            prompt = (
+                "You are a Vedic astrology question classifier. "
+                "Map the user's question to EXACTLY ONE of these life-domains:\n"
+                + ", ".join(DOMAIN_MAP.keys()) + ".\n\n"
+                f'Question: "{question}"\n\n'
+                "Return only the domain key as a single lowercase word. No punctuation, no explanation."
+            )
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            resp = model.generate_content(prompt)
+            text = (resp.text or "").strip().lower()
+            text = text.split()[0] if text else ""
+            text = text.strip(".,!?\"'`")
+            if text in DOMAIN_MAP:
+                return {"domain": text, "source": "llm"}
+        except Exception:
+            pass
+
+    # Fallback: keyword match.
+    q = question.lower()
+    for domain, kws in _KEYWORDS.items():
+        if any(k in q for k in kws):
+            return {"domain": domain, "source": "keyword"}
+    return {"domain": "general", "source": "fallback"}
+
+
+# ---------------------------------------------------------------------------
+# 2. Evidence gathering from the chart (deterministic)
+# ---------------------------------------------------------------------------
+
+STATE_SCORE = {"exalted": 2.0, "own": 1.0, "debilitated": -2.0, "neutral": 0.0}
+RELATION_SCORE = {"own": 1.0, "friend": 0.5, "neutral": 0.0, "enemy": -0.5}
+
+
+def _planet(chart: dict, name: str) -> dict | None:
+    for p in chart["planets"]:
+        if p["name"] == name:
+            return p
+    return None
+
+
+def _house(chart: dict, num: int) -> dict:
+    return chart["houses"][num - 1]
+
+
+def _karaka_planet(chart: dict, karaka: str) -> dict | None:
+    for k in chart.get("chara_karakas", []):
+        if k["karaka"] == karaka:
+            return _planet(chart, k["planet"])
+    return None
+
+
+def _score_planet(p: dict) -> tuple[float, list[str]]:
+    """Return (score, notes) for a planet's current condition."""
+    score = STATE_SCORE.get(p["state"], 0.0)
+    notes = []
+    if p["state"] == "exalted":         notes.append("exalted (peak strength)")
+    elif p["state"] == "own":           notes.append("in own sign (comfortable)")
+    elif p["state"] == "debilitated":   notes.append("debilitated (struggling)")
+    rel = p.get("relation", "neutral")
+    if rel == "friend":   notes.append("in friend's sign")
+    elif rel == "enemy":  notes.append("in enemy's sign")
+    score += RELATION_SCORE.get(rel, 0.0)
+    if p.get("combust"):
+        score -= 1.0
+        notes.append("combust (burnt by Sun)")
+    if p.get("retrograde"):
+        notes.append("retrograde")
+    return score, notes
+
+
+def gather_evidence(chart: dict, domain: str) -> dict:
+    """Build a structured list of evidence facts from the chart for a domain."""
+    spec = DOMAIN_MAP.get(domain, DOMAIN_MAP["general"])
+    evidence: list[dict] = []
+    total_score = 0.0
+
+    # ---- Primary house and its lord -------------------------------------
+    primary_house_num = spec["houses"][0]
+    primary_house = _house(chart, primary_house_num)
+    lord = _planet(chart, primary_house["lord"])
+    s, notes = _score_planet(lord)
+    total_score += s * 1.5  # weight house lord heavily
+    evidence.append({
+        "factor": f"House {primary_house_num} — primary house for this question",
+        "subject": f"{primary_house['sign']} ({primary_house['sign_sanskrit']}), ruled by {primary_house['lord']}",
+        "detail": (
+            f"The {primary_house_num}th house sign is {primary_house['sign']}. "
+            f"Its lord {primary_house['lord']} is in {lord['sign']} ({lord['nakshatra']} pada {lord['pada']}), "
+            f"sitting in the {lord['house']}th house. "
+            f"Condition: {', '.join(notes) if notes else 'neutral'}."
+        ),
+        "score": round(s * 1.5, 2),
+        "weight": "primary",
+    })
+    if primary_house["occupants"]:
+        evidence.append({
+            "factor": f"Planets sitting in House {primary_house_num}",
+            "subject": ", ".join(primary_house["occupants"]),
+            "detail": f"{', '.join(primary_house['occupants'])} currently occupy the {primary_house_num}th house — they actively shape this domain.",
+            "score": 0.0,
+            "weight": "context",
+        })
+
+    # ---- Supporting houses (lighter weight) -----------------------------
+    for hn in spec["houses"][1:]:
+        h = _house(chart, hn)
+        l = _planet(chart, h["lord"])
+        s2, notes2 = _score_planet(l)
+        total_score += s2 * 0.5
+        evidence.append({
+            "factor": f"House {hn} — supporting",
+            "subject": f"{h['sign']}, ruled by {h['lord']}",
+            "detail": f"Lord {h['lord']} in {l['sign']} — {', '.join(notes2) if notes2 else 'neutral'}.",
+            "score": round(s2 * 0.5, 2),
+            "weight": "supporting",
+        })
+
+    # ---- Natural karakas -------------------------------------------------
+    for nk in spec["naturals"]:
+        p = _planet(chart, nk)
+        if not p:
+            continue
+        s3, notes3 = _score_planet(p)
+        total_score += s3
+        evidence.append({
+            "factor": f"Natural karaka: {nk}",
+            "subject": f"{nk} in {p['sign']}, {p['house']}th house",
+            "detail": (
+                f"{nk} is the natural significator of this domain. "
+                f"It sits in {p['sign']} ({p['nakshatra']} pada {p['pada']}), "
+                f"{p['house']}th house, avastha: {p['avastha']}. "
+                f"Condition: {', '.join(notes3) if notes3 else 'neutral'}."
+            ),
+            "score": round(s3, 2),
+            "weight": "primary",
+        })
+
+    # ---- Chara karaka ----------------------------------------------------
+    ck_role = spec["chara"]
+    ck_planet = _karaka_planet(chart, ck_role)
+    if ck_planet:
+        s4, notes4 = _score_planet(ck_planet)
+        total_score += s4 * 0.8
+        evidence.append({
+            "factor": f"Chara Karaka ({ck_role})",
+            "subject": f"{ck_planet['name']} carries the {ck_role}karaka role",
+            "detail": (
+                f"In this chart, {ck_planet['name']} plays the {ck_role}karaka role "
+                f"(Jaimini significator for this domain). "
+                f"It is in {ck_planet['sign']}, {ck_planet['house']}th house. "
+                f"Condition: {', '.join(notes4) if notes4 else 'neutral'}."
+            ),
+            "score": round(s4 * 0.8, 2),
+            "weight": "primary",
+        })
+
+    # ---- DBA: Mahadasha → Antardasha → Pratyantar ------------------------
+    # Three nested timing layers. MD sets the multi-year backdrop;
+    # AD is the active sub-period coloring it; PD is the immediate trigger.
+    # Each layer is scored, with weight decreasing as scope narrows but bonus
+    # increasing if that lord directly touches a core house for this question.
+    dasha = chart.get("dasha", {})
+
+    dba_layers = [
+        # (label, lord_name, scope_weight, core_bonus, remaining_text, role_text)
+        ("MD", dasha.get("current_mahadasha"), 0.6, 0.5,
+         f"{dasha.get('remaining_years', '?')} years remaining",
+         "long-term theme — the multi-year backdrop for this question"),
+        ("AD", dasha.get("current_antardasha"), 0.5, 0.4,
+         f"~{dasha.get('antardasha_remaining_days', '?')} days remaining",
+         "current sub-period — coloring the MD theme right now"),
+        ("PD", dasha.get("current_pratyantar"), 0.4, 0.3,
+         f"~{dasha.get('pratyantar_remaining_days', '?')} days remaining",
+         "immediate trigger — what's active this week"),
+    ]
+
+    for label, lord_name, weight, core_bonus, remaining, role in dba_layers:
+        if not lord_name:
+            continue
+        lord = _planet(chart, lord_name)
+        if not lord:
+            continue
+        s_layer, notes_layer = _score_planet(lord)
+        in_primary = lord["house"] in spec["houses"]
+        layer_score = s_layer * weight + (core_bonus if in_primary else 0.0)
+        total_score += layer_score
+        relevance = "directly activates this domain" if in_primary else "colors the background context"
+        evidence.append({
+            "factor": f"{label} — {lord_name} ({role.split(' — ')[0]})",
+            "subject": f"{lord_name} {label} · {remaining}",
+            "detail": (
+                f"{role.capitalize()}. "
+                f"{lord_name} sits in {lord['sign']}, {lord['house']}th house — {relevance}. "
+                f"Condition: {', '.join(notes_layer) if notes_layer else 'neutral'}."
+            ),
+            "score": round(layer_score, 2),
+            "weight": "primary" if label == "MD" else "supporting",
+        })
+
+    # ---- Timing window: when the next PD lord shifts ---------------------
+    pd_timeline = dasha.get("pratyantar_timeline") or []
+    current_pd_idx = next((i for i, t in enumerate(pd_timeline) if t.get("current")), None)
+    if current_pd_idx is not None and current_pd_idx + 1 < len(pd_timeline):
+        next_pd = pd_timeline[current_pd_idx + 1]
+        evidence.append({
+            "factor": "Timing window — next PD shift",
+            "subject": f"{next_pd['lord']} pratyantar begins {next_pd['starts']}",
+            "detail": (
+                f"The current {dasha.get('current_pratyantar')} pratyantar runs until {pd_timeline[current_pd_idx]['ends']}. "
+                f"After that, {next_pd['lord']} pratyantar takes over — that's often when "
+                f"questions of this nature naturally resolve or shift direction."
+            ),
+            "score": 0.0,
+            "weight": "context",
+        })
+
+    # ---- Lagna lord — sincerity of the question -------------------------
+    lagna_lord_name = chart["lagna"]["lord"]
+    lagna_lord = _planet(chart, lagna_lord_name)
+    s6, _notes6 = _score_planet(lagna_lord)
+    evidence.append({
+        "factor": "Lagna lord — strength of the question itself",
+        "subject": f"{lagna_lord_name} (Lagna lord)",
+        "detail": (
+            f"The Lagna lord {lagna_lord_name} reflects the seriousness of the question. "
+            f"It is {chart['lagna']['lord_state']} in {chart['lagna']['lord_sign']}. "
+            f"{'A strong Lagna lord lends weight to the chart' if s6 > 0 else 'A weak Lagna lord softens the chart' if s6 < 0 else 'Lagna lord is steady'}."
+        ),
+        "score": round(s6 * 0.3, 2),
+        "weight": "context",
+    })
+    total_score += s6 * 0.3
+
+    return {
+        "domain": domain,
+        "label": spec["label"],
+        "primary_houses": spec["houses"],
+        "natural_karakas": spec["naturals"],
+        "chara_karaka_role": ck_role,
+        "evidence": evidence,
+        "total_score": round(total_score, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. Verdict (deterministic)
+# ---------------------------------------------------------------------------
+
+def make_verdict(total_score: float) -> dict:
+    if total_score >= 3.0:
+        label, confidence = "strongly favorable", "high"
+    elif total_score >= 1.0:
+        label, confidence = "favorable", "medium"
+    elif total_score > -1.0:
+        label, confidence = "mixed", "medium"
+    elif total_score > -3.0:
+        label, confidence = "challenging", "medium"
+    else:
+        label, confidence = "strongly challenging", "high"
+    return {"label": label, "score": round(total_score, 2), "confidence": confidence}
+
+
+# ---------------------------------------------------------------------------
+# 4. Narrative synthesis (Gemini, with template fallback)
+# ---------------------------------------------------------------------------
+
+def _template_narrative(question: str, intent: dict, verdict: dict, evidence: list[dict]) -> str:
+    primary = [e for e in evidence if e["weight"] == "primary"]
+    bullets = "\n".join(f"• {e['factor']}: {e['subject']}" for e in primary[:4])
+    return (
+        f"You asked: \"{question}\"\n"
+        f"This is a question about {intent['label']}.\n\n"
+        f"Reading: {verdict['label']} (score {verdict['score']}, confidence {verdict['confidence']}).\n\n"
+        f"Key factors:\n{bullets}"
+    )
+
+
+def _detect_caveats(chart: dict, domain_key: str, dba_stack: dict, ev_items: list[dict]) -> list[str]:
+    """Flag the chart-significant caveats so the LLM is guaranteed to mention them."""
+    caveats: list[str] = []
+    spec = DOMAIN_MAP.get(domain_key, DOMAIN_MAP["general"])
+    core_houses = spec["houses"]
+
+    # 1. DBA lord caveats
+    for layer in ("md", "ad", "pd"):
+        info = dba_stack.get(layer) or {}
+        lord = info.get("lord")
+        if not lord:
+            continue
+        if info.get("combust"):
+            caveats.append(f"{lord} ({layer.upper()}) is combust by the Sun — its judgement is clouded right now")
+        if info.get("state") == "debilitated":
+            caveats.append(f"{lord} ({layer.upper()}) is debilitated — weak placement for timing")
+        if info.get("relation") == "enemy":
+            caveats.append(f"{lord} ({layer.upper()}) sits in an enemy's sign — uneasy host")
+        if info.get("retrograde"):
+            caveats.append(f"{lord} ({layer.upper()}) is retrograde — themes may revisit or reverse")
+
+    # 2. Primary house lord caveats
+    primary_h_num = core_houses[0]
+    primary_h = chart["houses"][primary_h_num - 1]
+    lord_planet = _planet(chart, primary_h["lord"])
+    if lord_planet:
+        if lord_planet.get("combust"):
+            caveats.append(f"the {primary_h_num}th lord ({lord_planet['name']}) is combust — primary house weakened")
+        if lord_planet.get("state") == "debilitated":
+            caveats.append(f"the {primary_h_num}th lord ({lord_planet['name']}) is debilitated — primary house struggling")
+
+    return caveats
+
+
+def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict: dict) -> dict:
+    template = _template_narrative(question, intent, verdict, evidence["evidence"])
+    if not _configure_gemini():
+        return {"answer": template, "source": "template"}
+
+    domain_key = intent.get("domain", "general")
+    spec = DOMAIN_MAP.get(domain_key, DOMAIN_MAP["general"])
+    core_houses = spec["houses"]
+
+    # ---- DBA stack with per-layer house_meaning (the chart-specific hint) ----
+    d = chart.get("dasha", {}) or {}
+    def _dba_layer(lord_name):
+        if not lord_name:
+            return None
+        p = _planet(chart, lord_name)
+        if not p:
+            return None
+        return {
+            "lord": lord_name,
+            "sign": p["sign"],
+            "house": p["house"],
+            "house_meaning": _house_meaning(domain_key, p["house"]),
+            "in_core_houses": p["house"] in core_houses,
+            "state": p["state"],
+            "relation": p.get("relation"),
+            "retrograde": p.get("retrograde"),
+            "combust": p.get("combust"),
+        }
+
+    dba_stack = {
+        "md": {**(_dba_layer(d.get("current_mahadasha")) or {}),
+               "remaining_years": d.get("remaining_years")},
+        "ad": {**(_dba_layer(d.get("current_antardasha")) or {}),
+               "remaining_days": d.get("antardasha_remaining_days")},
+        "pd": {**(_dba_layer(d.get("current_pratyantar")) or {}),
+               "remaining_days": d.get("pratyantar_remaining_days")},
+    }
+
+    # ---- Primary house lord (separate, so the LLM has it at hand) ----
+    primary_h_num = core_houses[0]
+    primary_h = chart["houses"][primary_h_num - 1]
+    primary_lord_p = _planet(chart, primary_h["lord"]) or {}
+    primary_house_lord = {
+        "house_number": primary_h_num,
+        "house_meaning": _house_meaning(domain_key, primary_h_num),
+        "lord_name": primary_h["lord"],
+        "lord_sits_in_house": primary_lord_p.get("house"),
+        "lord_sits_in_house_meaning": _house_meaning(domain_key, primary_lord_p.get("house") or 0),
+        "lord_sign": primary_lord_p.get("sign"),
+        "lord_state": primary_lord_p.get("state"),
+        "lord_combust": primary_lord_p.get("combust"),
+        "lord_retrograde": primary_lord_p.get("retrograde"),
+    }
+
+    # ---- Pre-grouped positive / negative contributors ----
+    ev_items = evidence["evidence"]
+    scored = [e for e in ev_items if isinstance(e.get("score"), (int, float)) and e["score"] != 0]
+    top_positive = sorted([e for e in scored if e["score"] > 0], key=lambda e: -e["score"])[:3]
+    top_negative = sorted([e for e in scored if e["score"] < 0], key=lambda e: e["score"])[:2]
+    _slim = lambda e: {"factor": e["factor"], "subject": e["subject"], "score": e["score"]}
+
+    # ---- Caveats (deterministic — guarantees they surface in the reading) ----
+    caveats = _detect_caveats(chart, domain_key, dba_stack, ev_items)
+
+    # ---- Next PD shift (for the timing-window section) ----
+    pd_timeline = d.get("pratyantar_timeline") or []
+    cur_pd_idx = next((i for i, t in enumerate(pd_timeline) if t.get("current")), None)
+    next_pd_shift = None
+    if cur_pd_idx is not None and cur_pd_idx + 1 < len(pd_timeline):
+        next_pd_shift = {
+            "lord": pd_timeline[cur_pd_idx + 1]["lord"],
+            "date": pd_timeline[cur_pd_idx + 1]["starts"],
+        }
+
+    facts = {
+        "question": question,
+        "domain": intent["label"],
+        "primary_houses": core_houses,
+        "primary_house_meanings": {h: _house_meaning(domain_key, h) for h in core_houses},
+        "natural_karakas": spec["naturals"],
+        "lagna": chart["lagna"],
+        "primary_house_lord": primary_house_lord,
+        "dba": dba_stack,
+        "top_positive": [_slim(e) for e in top_positive],
+        "top_negative": [_slim(e) for e in top_negative],
+        "caveats": caveats,
+        "verdict": verdict,
+        "next_pd_shift": next_pd_shift,
+    }
+
+    prompt = f"""You are a Vedic astrologer giving a Prashna (horary) reading.
+
+Tone: like a thoughtful friend who reads charts. Direct, grounded, specific to THIS chart.
+Avoid cosmic vagueness ("the universe", "energies aligning"). No promises ("you will").
+Prefer phrasings like "the chart suggests", "right now", "this period favors".
+
+The user asked: "{question}"
+
+Below are the structured facts from the chart cast at the moment of their question.
+Use ONLY these facts. Do not invent placements, planets, or aspects.
+
+FACTS (JSON):
+{json.dumps(facts, indent=2, default=str)}
+
+Write the reading as MARKDOWN with exactly these 6 sections, in order,
+each starting with a level-2 header (##). Use the exact headers below:
+
+## 🎯 The theme
+2–3 sentences. Name the primary houses governing this question in plain English
+(use `primary_house_meanings` to phrase them naturally). Name the natural karakas
+and what they mean here (e.g. "Saturn — hard work").
+
+## ✨ The moment
+2–3 sentences. Name the Lagna and where the Lagna lord sits.
+Say what that implies about how sincere/serious the question is.
+
+## 🏛️ The houses governing your question
+2–4 sentences. Walk through the primary house lord's current condition —
+where it sits (use `lord_sits_in_house_meaning`), what state it's in, why
+that helps or hurts. If a top_positive or top_negative comes from a supporting
+house, mention it briefly.
+
+## ⏳ Who's on duty — the three timing lords
+3–5 sentences. For EACH of the three DBA lords (MD, AD, PD):
+  1. Name the lord AND the house it sits in.
+  2. Use the lord's `house_meaning` (already chart-specific) to say what that
+     house represents for THIS question.
+  3. Add the lord's state (own/exalted/combust/etc.) as a MODIFIER, not the
+     main point.
+Then connect the three — how do the long-term, mid-term, and immediate
+energies stack up together for THIS question?
+
+CRITICAL: do NOT describe the planets' generic nature (e.g. "Saturn says step
+carefully"). Describe their PLACEMENTS for THIS question. A reading that
+would apply to any question has failed this section.
+
+## ⚖️ The verdict
+2–3 sentences. State the verdict label in the first sentence ("the chart leans
+favorable" / "the chart is mixed" / etc). Then name the TOP positive contributor
+AND exactly ONE caveat from the `caveats` list. If `caveats` is empty, omit the
+caveat sentence.
+
+## 🪔 The timing window
+1–2 sentences. State the days remaining in the current pratyantar (from `dba.pd`).
+Name who takes over next and on what date (from `next_pd_shift`). Imply how the
+question's timing might shift — without making a promise. If `next_pd_shift` is null,
+just describe the current window.
+
+Return ONLY the markdown. No surrounding text, no JSON wrapper, no code fence.
+"""
+
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+        # Strip accidental ```markdown fences if Gemini adds one anyway
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("markdown"):
+                text = text[len("markdown"):].lstrip("\n")
+            text = text.rstrip("`").strip()
+        if text:
+            return {"answer": text, "source": "gemini"}
+    except Exception as e:
+        return {"answer": template, "source": "template", "error": str(e)}
+
+    return {"answer": template, "source": "template"}
+
+
+# ---------------------------------------------------------------------------
+# 5. Public entry point
+# ---------------------------------------------------------------------------
+
+def answer(question: str, chart: dict) -> dict:
+    intent_raw = classify_question(question)
+    domain = intent_raw["domain"]
+    intent = {
+        "domain": domain,
+        "label": DOMAIN_MAP[domain]["label"],
+        "source": intent_raw["source"],
+    }
+    evidence = gather_evidence(chart, domain)
+    verdict = make_verdict(evidence["total_score"])
+    synth = synthesize(question, chart, intent, evidence, verdict)
+    return {
+        "question": question,
+        "intent": intent,
+        "evidence": evidence,
+        "verdict": verdict,
+        "answer": synth["answer"],
+        "answer_source": synth["source"],
+    }

@@ -20,6 +20,7 @@ import os
 from search import semantic_search, trinity_search
 from prashna import compute_chart
 from narrate import cosmic_pulse
+from interpret import answer as interpret_question
 import datetime as _dt
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
@@ -142,6 +143,38 @@ def today(
     if pulse:
         chart["pulse"] = cosmic_pulse(chart)
     return chart
+
+
+@app.get("/ask")
+def ask(
+    q: str = Query(..., description="The life question being asked"),
+    lat: float = Query(17.4399),
+    lon: float = Query(78.3489),
+    place: str = Query("Gachibowli, Hyderabad, India"),
+    when: str | None = Query(None, description="ISO datetime; defaults to now"),
+):
+    """
+    Prashna Q&A — answer a life question from the live chart cast at the moment.
+
+    Pipeline:
+      1. Compute chart at the moment (datetime + lat/lon).
+      2. Classify the question into a Vedic life-domain (Gemini).
+      3. Gather evidence from the chart (deterministic).
+      4. Score → verdict (deterministic).
+      5. Synthesize narrative (Gemini).
+    """
+    dt_obj = None
+    if when:
+        try:
+            dt_obj = _dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            return {"error": f"Bad datetime: {when}"}
+
+    chart = compute_chart(when=dt_obj, lat=lat, lon=lon, place=place)
+    chart["pulse"] = cosmic_pulse(chart)
+    result = interpret_question(q.strip(), chart)
+    result["chart"] = chart  # include the chart so the frontend can show it inline
+    return result
 
 
 @app.get("/search")
