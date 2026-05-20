@@ -138,7 +138,7 @@ export default function AskPage() {
       </div>
 
       <div className="mb-6">
-        <HowItWorks />
+        <HowItWorks data={data} />
       </div>
 
       {/* Loading */}
