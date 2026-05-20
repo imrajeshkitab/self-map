@@ -12,10 +12,11 @@ Endpoints:
     GET  /stats
 """
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import os
+import time
 
 from search import semantic_search, trinity_search
 from prashna import compute_chart
@@ -23,6 +24,7 @@ from narrate import cosmic_pulse
 from interpret import answer as interpret_question
 from dasha_table import DASHA_TENURE, DASHA_YEARS, VIMSHOTTARI_ORDER
 from dasha_analysis import analyze_dasha
+import audit_log
 import datetime as _dt
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
@@ -40,6 +42,9 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+# Initialize the audit DB (idempotent — creates table + indexes if missing).
+audit_log.init_db()
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +154,7 @@ def today(
 
 @app.get("/ask")
 def ask(
+    bg: BackgroundTasks,
     q: str = Query(..., description="The life question being asked"),
     lat: float = Query(17.4399),
     lon: float = Query(78.3489),
@@ -160,23 +166,49 @@ def ask(
 
     Pipeline:
       1. Compute chart at the moment (datetime + lat/lon).
-      2. Classify the question into a Vedic life-domain (Gemini).
+      2. Map the question to candidate houses via word→house dictionary
+         (semantic fallback) → LLM picks within the narrowed set.
       3. Gather evidence from the chart (deterministic).
       4. Score → verdict (deterministic).
       5. Synthesize narrative (Gemini).
+
+    Every request is recorded in the audit log (audit_log.log_ask) via a
+    BackgroundTask so the audit write never blocks the user's response.
     """
+    started_at = time.time()
     dt_obj = None
     if when:
         try:
             dt_obj = _dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
         except ValueError:
+            # Still log the bad-input case so we can spot client bugs.
+            bg.add_task(
+                audit_log.log_ask, q, lat, lon, place, when, None, started_at,
+                f"Bad datetime: {when}",
+            )
             return {"error": f"Bad datetime: {when}"}
 
-    chart = compute_chart(when=dt_obj, lat=lat, lon=lon, place=place)
-    chart["pulse"] = cosmic_pulse(chart)
-    result = interpret_question(q.strip(), chart)
-    result["chart"] = chart  # include the chart so the frontend can show it inline
-    return result
+    try:
+        chart = compute_chart(when=dt_obj, lat=lat, lon=lon, place=place)
+        chart["pulse"] = cosmic_pulse(chart)
+        result = interpret_question(q.strip(), chart)
+        result["chart"] = chart  # include the chart so the frontend can show it inline
+        bg.add_task(
+            audit_log.log_ask,
+            q.strip(), lat, lon, place,
+            (dt_obj.isoformat() if dt_obj else None),
+            result, started_at, None,
+        )
+        return result
+    except Exception as e:
+        # Pipeline-level failures get audited too — error column tracks them.
+        bg.add_task(
+            audit_log.log_ask,
+            q.strip(), lat, lon, place,
+            (dt_obj.isoformat() if dt_obj else None),
+            None, started_at, str(e),
+        )
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +258,66 @@ def dasha_analyze(
             return {"error": f"Bad when: {when}"}
 
     return analyze_dasha(birth, when_dt)
+
+
+# ---------------------------------------------------------------------------
+# Audit log  (May 19 Durga MOM — action item #3)
+# ---------------------------------------------------------------------------
+# Read-only endpoints over the append-only ask_log. Writes happen via a
+# BackgroundTask inside /ask above. Unauthenticated for now (localhost-only
+# trust model); add an admin gate before this faces real users.
+
+# NOTE: Literal-path routes (/audit/recent, /audit/summary, /audit/unmatched-tokens)
+# MUST be registered BEFORE the parametric /audit/{entry_id} — FastAPI matches
+# in order, and {entry_id} would otherwise capture "summary" / "unmatched-tokens"
+# as the id, then 422 because they can't parse to int.
+
+@app.get("/audit/recent")
+def audit_recent(
+    limit:   int = Query(50, ge=1, le=500),
+    source:  str | None = Query(None, description="Filter to one source bucket — 'dictionary', 'dictionary+llm', 'dictionary+top_score', or 'domain_map_fallback(*)'"),
+    verdict: str | None = Query(None, description="Filter by verdict label, e.g. 'favorable', 'mixed'"),
+    since:   str | None = Query(None, description="ISO datetime cutoff — only entries created at-or-after this"),
+):
+    """Paginated recent /ask entries — the spine of the admin view."""
+    return {
+        "count":   limit,
+        "filters": {"source": source, "verdict": verdict, "since": since},
+        "items":   audit_log.list_recent(limit=limit, source=source, verdict=verdict, since=since),
+    }
+
+
+@app.get("/audit/summary")
+def audit_summary(
+    since: str | None = Query(None, description="ISO datetime cutoff. Omit for all-time."),
+):
+    """Aggregate stats: counts by source / verdict / answer_source, fallback
+    rate, LLM hiccup rate, avg latency. The dashboard at the top of /admin/audit."""
+    return audit_log.summary(since=since)
+
+
+@app.get("/audit/unmatched-tokens")
+def audit_unmatched_tokens(
+    limit: int = Query(20, ge=1, le=100),
+    since: str | None = Query(None, description="ISO datetime cutoff."),
+):
+    """Ranked list of tokens that fell through to 'unmatched' in the mapper.
+    The most-missed words are the highest-leverage candidates for adding to
+    the seed dictionary or to PRIMARY_OVERRIDES."""
+    return {
+        "since":  since,
+        "tokens": audit_log.unmatched_tokens(limit=limit, since=since),
+    }
+
+
+@app.get("/audit/{entry_id}")
+def audit_entry(entry_id: int):
+    """Full detail for one entry — includes the parsed mapping trace and
+    chart summary so a UI can rehydrate the JourneyTrace view."""
+    entry = audit_log.get_by_id(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"audit entry {entry_id} not found")
+    return entry
 
 
 @app.get("/search")
