@@ -16,9 +16,12 @@ LLM only does (a) intent classification and (b) prose synthesis.
 from __future__ import annotations
 import json
 import os
+import re
 from typing import Any
 from dotenv import load_dotenv
 import google.generativeai as genai
+
+import house_mapper
 
 load_dotenv()
 GEMINI_MODEL = "gemini-2.0-flash"
@@ -208,6 +211,158 @@ def classify_question(question: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Word-to-house mapping (May 19 Durga MOM — action item #4)
+# ---------------------------------------------------------------------------
+#
+# Replaces the rigid 14-domain classifier above with a dictionary-driven
+# narrowing of candidate houses, followed by an LLM disambiguation step
+# constrained to that narrowed set.
+#
+# Order of operations:
+#   1. house_mapper.map_question(q) → token-driven candidates
+#   2. If 0 candidates    → fall back to classify_question + DOMAIN_MAP
+#      If 1 candidate     → accept it directly, skip the LLM
+#      If 2+ candidates   → ask the LLM to pick top 1-3
+#
+# Output shape (the "intent" object downstream code consumes):
+#   {
+#     "selected_houses":  [5],
+#     "natural_karakas":  ["Jupiter", "Venus", "Mars"],
+#     "label":            "Children / Creativity / Play / Romance",
+#     "source":           "dictionary" | "dictionary+llm" | "domain_map_fallback",
+#     "mapping":          <house_mapper.map_question trace>,
+#     "llm_reasoning":    str | None,
+#     "domain":           str   # legacy field, present for downstream
+#                              # HOUSE_MEANING_FOR_DOMAIN lookup. "general"
+#                              # when dictionary-driven (no 14-domain key).
+#   }
+# ---------------------------------------------------------------------------
+
+
+def _llm_pick_houses(question: str, trace: dict) -> tuple[list[int], str | None]:
+    """Ask Gemini to pick 1-3 houses from the dictionary's narrowed candidate set.
+    Returns (selected_houses, reasoning). Falls back to top-N-by-score on failure.
+    """
+    candidates = trace["candidates"]
+    top_by_score = [c["house"] for c in candidates[:6]]
+
+    if not _configure_gemini():
+        return top_by_score[:4], None
+
+    # Build a compact, LLM-friendly table of candidates + house meanings
+    house_labels = house_mapper.HOUSE_LABELS
+    candidate_lines = []
+    for c in candidates[:6]:    # show at most 6
+        toks = ", ".join(c["supporting_tokens"])
+        candidate_lines.append(
+            f"  H{c['house']:>2}  score={c['score']}  "
+            f"meaning={house_labels.get(c['house'], '?')}  "
+            f"matched_tokens=[{toks}]"
+        )
+    candidates_table = "\n".join(candidate_lines)
+
+    prompt = f"""You are mapping a Prashna (horary) question to the relevant Vedic houses.
+
+The user asked: "{question}"
+
+A deterministic dictionary lookup of the words in their question produced
+these candidate houses, ranked by score:
+
+{candidates_table}
+
+Your task: pick the 1-3 houses most relevant to THIS specific question.
+
+Rules:
+  - Prefer FEWER houses with stronger signal over more houses with weak signal.
+  - Only include a house if its match makes semantic sense for the question.
+  - The first house in your list should be the PRIMARY house (most central).
+  - Do NOT pick houses that aren't in the candidate list — the dictionary
+    already narrowed the relevant set.
+  - If two candidates are equally relevant, prefer the one with higher score.
+
+Return ONLY a JSON object, no surrounding text:
+{{"selected_houses": [5], "reasoning": "movie maps to the 5th house of entertainment"}}
+"""
+
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+        # Strip code fences if Gemini wraps the JSON
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+            text = re.sub(r"\n?```\s*$", "", text)
+        data = json.loads(text)
+        picked = data.get("selected_houses") or []
+        if not isinstance(picked, list):
+            return top_by_score[:4], None
+        # Sanitize: only houses that were actually in the candidate set
+        valid_houses = {c["house"] for c in candidates}
+        picked_valid = [int(h) for h in picked if isinstance(h, (int, str)) and int(h) in valid_houses]
+        if not picked_valid:
+            return top_by_score[:4], data.get("reasoning")
+        return picked_valid[:3], data.get("reasoning")
+    except Exception:
+        return top_by_score[:4], None
+
+
+def _domain_map_fallback(question: str) -> dict:
+    """Used only when the dictionary returns ZERO candidate houses.
+    Falls back to the old 14-domain classifier so the system still produces
+    a reading instead of erroring out.
+    """
+    intent_raw = classify_question(question)
+    domain = intent_raw["domain"]
+    spec = DOMAIN_MAP[domain]
+    return {
+        "selected_houses":  list(spec["houses"]),
+        "natural_karakas":  list(spec["naturals"]),
+        "label":            spec["label"],
+        "source":           f"domain_map_fallback({intent_raw['source']})",
+        "mapping":          None,
+        "llm_reasoning":    None,
+        "domain":           domain,
+    }
+
+
+def decide_houses(question: str) -> dict:
+    """Pick the houses relevant to a question via the dictionary → LLM pipeline,
+    with a graceful fallback to the old domain classifier.
+
+    See module-level comment for the output shape.
+    """
+    trace = house_mapper.map_question(question)
+    candidates = trace["candidates"]
+
+    if not candidates:
+        return _domain_map_fallback(question)
+
+    if len(candidates) == 1:
+        houses = [candidates[0]["house"]]
+        return {
+            "selected_houses":  houses,
+            "natural_karakas":  house_mapper.natural_karakas_for_houses(houses),
+            "label":            house_mapper.label_for_houses(houses),
+            "source":           "dictionary",
+            "mapping":          trace,
+            "llm_reasoning":    None,
+            "domain":           "general",
+        }
+
+    # 2+ candidates → LLM picks
+    picked, reasoning = _llm_pick_houses(question, trace)
+    return {
+        "selected_houses":  picked,
+        "natural_karakas":  house_mapper.natural_karakas_for_houses(picked),
+        "label":            house_mapper.label_for_houses(picked),
+        "source":           "dictionary+llm" if reasoning else "dictionary+top_score",
+        "mapping":          trace,
+        "llm_reasoning":    reasoning,
+        "domain":           "general",
+    }
+
+
+# ---------------------------------------------------------------------------
 # 2. Evidence gathering from the chart (deterministic)
 # ---------------------------------------------------------------------------
 
@@ -252,14 +407,34 @@ def _score_planet(p: dict) -> tuple[float, list[str]]:
     return score, notes
 
 
-def gather_evidence(chart: dict, domain: str) -> dict:
-    """Build a structured list of evidence facts from the chart for a domain."""
-    spec = DOMAIN_MAP.get(domain, DOMAIN_MAP["general"])
+def gather_evidence(
+    chart: dict,
+    houses: list[int],
+    natural_karakas: list[str],
+    domain_key: str = "general",
+) -> dict:
+    """Build a structured list of evidence facts from the chart.
+
+    Args:
+        chart:            the full chart dict (from prashna.compute_chart)
+        houses:           houses selected for this question (primary first)
+        natural_karakas:  planets to treat as natural significators
+        domain_key:       legacy hint used only by HOUSE_MEANING_FOR_DOMAIN
+                          for richer per-house phrasing. "general" → use
+                          generic English meanings. Stays in place for the
+                          synthesize() prompt; not used in scoring math.
+    """
+    # Guard: callers should always pass at least one house, but be safe.
+    if not houses:
+        houses = [1]
+    if not natural_karakas:
+        natural_karakas = ["Sun", "Moon"]
+
     evidence: list[dict] = []
     total_score = 0.0
 
     # ---- Primary house and its lord -------------------------------------
-    primary_house_num = spec["houses"][0]
+    primary_house_num = houses[0]
     primary_house = _house(chart, primary_house_num)
     lord = _planet(chart, primary_house["lord"])
     s, notes = _score_planet(lord)
@@ -286,7 +461,7 @@ def gather_evidence(chart: dict, domain: str) -> dict:
         })
 
     # ---- Supporting houses (lighter weight) -----------------------------
-    for hn in spec["houses"][1:]:
+    for hn in houses[1:]:
         h = _house(chart, hn)
         l = _planet(chart, h["lord"])
         s2, notes2 = _score_planet(l)
@@ -300,7 +475,7 @@ def gather_evidence(chart: dict, domain: str) -> dict:
         })
 
     # ---- Natural karakas -------------------------------------------------
-    for nk in spec["naturals"]:
+    for nk in natural_karakas:
         p = _planet(chart, nk)
         if not p:
             continue
@@ -319,24 +494,11 @@ def gather_evidence(chart: dict, domain: str) -> dict:
             "weight": "primary",
         })
 
-    # ---- Chara karaka ----------------------------------------------------
-    ck_role = spec["chara"]
-    ck_planet = _karaka_planet(chart, ck_role)
-    if ck_planet:
-        s4, notes4 = _score_planet(ck_planet)
-        total_score += s4 * 0.8
-        evidence.append({
-            "factor": f"Chara Karaka ({ck_role})",
-            "subject": f"{ck_planet['name']} carries the {ck_role}karaka role",
-            "detail": (
-                f"In this chart, {ck_planet['name']} plays the {ck_role}karaka role "
-                f"(Jaimini significator for this domain). "
-                f"It is in {ck_planet['sign']}, {ck_planet['house']}th house. "
-                f"Condition: {', '.join(notes4) if notes4 else 'neutral'}."
-            ),
-            "score": round(s4 * 0.8, 2),
-            "weight": "primary",
-        })
+    # NOTE: The old "Chara Karaka (Jaimini)" evidence block was removed per
+    # the May 12 Durga MOM action item: "Remove all Jaimini-based logic
+    # (Chara Karakas) — the system is built on Parashari astrology."
+    # The chart still carries chara_karakas (for backward-compatible API
+    # output) but they no longer participate in scoring or the reading.
 
     # ---- DBA: Mahadasha → Antardasha → Pratyantar ------------------------
     # Three nested timing layers. MD sets the multi-year backdrop;
@@ -365,7 +527,7 @@ def gather_evidence(chart: dict, domain: str) -> dict:
         if not lord:
             continue
         s_layer, notes_layer = _score_planet(lord)
-        in_primary = lord["house"] in spec["houses"]
+        in_primary = lord["house"] in houses
         layer_score = s_layer * weight + (core_bonus if in_primary else 0.0)
         total_score += layer_score
         relevance = "directly activates this domain" if in_primary else "colors the background context"
@@ -416,13 +578,12 @@ def gather_evidence(chart: dict, domain: str) -> dict:
     total_score += s6 * 0.3
 
     return {
-        "domain": domain,
-        "label": spec["label"],
-        "primary_houses": spec["houses"],
-        "natural_karakas": spec["naturals"],
-        "chara_karaka_role": ck_role,
-        "evidence": evidence,
-        "total_score": round(total_score, 2),
+        "domain":           domain_key,
+        "label":            house_mapper.label_for_houses(houses),
+        "primary_houses":   houses,
+        "natural_karakas":  natural_karakas,
+        "evidence":         evidence,
+        "total_score":      round(total_score, 2),
     }
 
 
@@ -459,11 +620,11 @@ def _template_narrative(question: str, intent: dict, verdict: dict, evidence: li
     )
 
 
-def _detect_caveats(chart: dict, domain_key: str, dba_stack: dict, ev_items: list[dict]) -> list[str]:
+def _detect_caveats(chart: dict, core_houses: list[int], dba_stack: dict, ev_items: list[dict]) -> list[str]:
     """Flag the chart-significant caveats so the LLM is guaranteed to mention them."""
     caveats: list[str] = []
-    spec = DOMAIN_MAP.get(domain_key, DOMAIN_MAP["general"])
-    core_houses = spec["houses"]
+    if not core_houses:
+        core_houses = [1]
 
     # 1. DBA lord caveats
     for layer in ("md", "ad", "pd"):
@@ -498,9 +659,14 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
     if not _configure_gemini():
         return {"answer": template, "source": "template"}
 
+    # Houses + karakas now come from the new dictionary-driven mapper (or the
+    # DOMAIN_MAP fallback path). `domain_key` is kept only as a hint for the
+    # HOUSE_MEANING_FOR_DOMAIN lookup — "general" produces the broadly-applicable
+    # English meanings, which is the right default when we don't have a 14-domain
+    # match anymore.
     domain_key = intent.get("domain", "general")
-    spec = DOMAIN_MAP.get(domain_key, DOMAIN_MAP["general"])
-    core_houses = spec["houses"]
+    core_houses = intent.get("selected_houses") or evidence.get("primary_houses") or [1]
+    natural_karakas = intent.get("natural_karakas") or evidence.get("natural_karakas") or []
 
     # ---- DBA stack with per-layer house_meaning (the chart-specific hint) ----
     d = chart.get("dasha", {}) or {}
@@ -555,7 +721,7 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
     _slim = lambda e: {"factor": e["factor"], "subject": e["subject"], "score": e["score"]}
 
     # ---- Caveats (deterministic — guarantees they surface in the reading) ----
-    caveats = _detect_caveats(chart, domain_key, dba_stack, ev_items)
+    caveats = _detect_caveats(chart, core_houses, dba_stack, ev_items)
 
     # ---- Next PD shift (for the timing-window section) ----
     pd_timeline = d.get("pratyantar_timeline") or []
@@ -572,7 +738,7 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
         "domain": intent["label"],
         "primary_houses": core_houses,
         "primary_house_meanings": {h: _house_meaning(domain_key, h) for h in core_houses},
-        "natural_karakas": spec["naturals"],
+        "natural_karakas": natural_karakas,
         "lagna": chart["lagna"],
         "primary_house_lord": primary_house_lord,
         "dba": dba_stack,
@@ -667,14 +833,24 @@ Return ONLY the markdown. No surrounding text, no JSON wrapper, no code fence.
 # ---------------------------------------------------------------------------
 
 def answer(question: str, chart: dict) -> dict:
-    intent_raw = classify_question(question)
-    domain = intent_raw["domain"]
-    intent = {
-        "domain": domain,
-        "label": DOMAIN_MAP[domain]["label"],
-        "source": intent_raw["source"],
-    }
-    evidence = gather_evidence(chart, domain)
+    """The public /ask entry point.
+
+    Pipeline (May 19 Durga MOM #4 architecture):
+      1. decide_houses(question)  — dictionary → narrowed candidates → LLM picks
+      2. gather_evidence(chart, houses, karakas)  — deterministic scoring
+      3. make_verdict(score)                       — fixed thresholds
+      4. synthesize(...)                           — Gemini writes the reading
+
+    The `intent` block carries both the human-readable label AND the full
+    mapping trace, ready to be persisted by the audit log (MOM #3).
+    """
+    intent = decide_houses(question)
+    evidence = gather_evidence(
+        chart,
+        houses=intent["selected_houses"],
+        natural_karakas=intent["natural_karakas"],
+        domain_key=intent.get("domain", "general"),
+    )
     verdict = make_verdict(evidence["total_score"])
     synth = synthesize(question, chart, intent, evidence, verdict)
     return {
