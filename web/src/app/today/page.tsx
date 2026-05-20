@@ -3,17 +3,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { today } from "@/lib/api";
 import type { Chart } from "@/lib/types";
-import { MomentControls, defaultMoment, toIsoWhen, type MomentValue } from "@/components/MomentControls";
+import { MomentControls, defaultMoment, emptyMoment, toIsoWhen, type MomentValue } from "@/components/MomentControls";
 import { PrashnaChart } from "@/components/PrashnaChart";
 import { ChartMetadata } from "@/components/ChartMetadata";
 import { DbaPanel } from "@/components/DbaPanel";
 import { CosmicWeather } from "@/components/CosmicWeather";
 
 export default function TodayPage() {
-  const [moment, setMoment] = useState<MomentValue>(() => defaultMoment());
+  // Stable empty date/time on first render — SSR HTML matches client hydration.
+  // The real "now" is populated by the effect below, then the chart fetch fires.
+  const [moment, setMoment] = useState<MomentValue>(() => emptyMoment());
   const [chart, setChart] = useState<Chart | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMoment(defaultMoment());
+  }, []);
 
   const load = useCallback(async (m: MomentValue) => {
     setLoading(true);
@@ -34,8 +40,12 @@ export default function TodayPage() {
     }
   }, []);
 
-  // Initial load + reload whenever moment changes
-  useEffect(() => { void load(moment); }, [moment, load]);
+  // Initial load + reload whenever moment changes. Skip the SSR-safe empty
+  // state so we don't fire an extra request before the populate effect runs.
+  useEffect(() => {
+    if (!moment.date || !moment.time) return;
+    void load(moment);
+  }, [moment, load]);
 
   return (
     <>

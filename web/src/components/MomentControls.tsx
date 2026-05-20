@@ -11,6 +11,27 @@ export type MomentValue = {
   place: string;      // human label for display + API
 };
 
+/**
+ * Stable placeholder used as the SSR/hydration initial state. Date/time are
+ * left blank so the server-rendered HTML matches the first client render.
+ * Pages should call `defaultMoment()` from inside a `useEffect` to populate
+ * the actual "now" once mounted on the client.
+ */
+export function emptyMoment(): MomentValue {
+  return {
+    date: "",
+    time: "",
+    lat: PRESET_PLACES[0].lat,
+    lon: PRESET_PLACES[0].lon,
+    place: PRESET_PLACES[0].name,
+  };
+}
+
+/**
+ * Returns the current local date + time. Non-deterministic — only call this
+ * on the client (inside an effect or event handler), never in useState's
+ * initializer, otherwise SSR hydration will mismatch.
+ */
 export function defaultMoment(): MomentValue {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");

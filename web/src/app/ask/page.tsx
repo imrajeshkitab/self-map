@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ask } from "@/lib/api";
 import type { AskResponse } from "@/lib/types";
-import { MomentControls, defaultMoment, toIsoWhen, type MomentValue } from "@/components/MomentControls";
+import { MomentControls, defaultMoment, emptyMoment, toIsoWhen, type MomentValue } from "@/components/MomentControls";
 import { HowItWorks } from "@/components/HowItWorks";
 import { VerdictBanner } from "@/components/VerdictBanner";
 import { MarkdownReading } from "@/components/MarkdownReading";
@@ -22,10 +22,17 @@ const EXAMPLES = [
 
 export default function AskPage() {
   const [question, setQuestion] = useState("");
-  const [moment, setMoment] = useState<MomentValue>(() => defaultMoment());
+  // Start with stable empty date/time so SSR HTML matches the first client
+  // render — populate the actual "now" only after mount.
+  const [moment, setMoment] = useState<MomentValue>(() => emptyMoment());
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Populate the real "now" on the client. Empty deps → runs once after mount.
+  useEffect(() => {
+    setMoment(defaultMoment());
+  }, []);
 
   // Keep the local-clock display in the meta line live-updating once a minute.
   const [tick, setTick] = useState(0);
