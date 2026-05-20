@@ -91,3 +91,27 @@ export async function listZodiac() {
   if (!res.ok) throw new Error(`/zodiac failed: ${res.status}`);
   return res.json();
 }
+
+export type DashaTenureEntry = {
+  years: number;
+  nature: string;
+  tone: "favorable" | "mixed" | "challenging";
+  themes: string[];
+  life_areas: number[];
+  best_for: string;
+  challenges: string;
+  transition_advice: string;
+};
+
+export type DashaTenureResponse = {
+  cycle_total_years: number;
+  order: string[];
+  tenure: Record<string, DashaTenureEntry>;
+  years_only: Record<string, number>;
+};
+
+export async function dashaTenure(): Promise<DashaTenureResponse> {
+  const res = await fetch(`${API_BASE}/dasha/tenure`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`/dasha/tenure failed: ${res.status}`);
+  return res.json();
+}

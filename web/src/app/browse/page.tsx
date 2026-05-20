@@ -1,118 +1,50 @@
-// Server component — fetches the three reference lists in parallel.
-import { listHouses, listPlanets, listZodiac } from "@/lib/api";
+// Server component — fetches all 4 reference sources in parallel, hands the
+// data to the client `BrowseTabs` component for the toggle/render layer.
+// Following Next.js App Router conventions: keep data-fetching on the server,
+// interactivity in client components.
 
-type ReferenceItem = Record<string, unknown> & { keywords?: string };
+import { listHouses, listPlanets, listZodiac, dashaTenure } from "@/lib/api";
+import type { DashaTenureResponse } from "@/lib/api";
+import { BrowseTabs } from "@/components/BrowseTabs";
 
-type RefList = { count: number; items: ReferenceItem[] };
+type RefItem = Record<string, unknown>;
+type RefList = { count: number; items: RefItem[] };
 
 export default async function BrowsePage() {
-  let houses: RefList | null = null;
-  let planets: RefList | null = null;
-  let zodiac: RefList | null = null;
-  let error: string | null = null;
-  try {
-    [houses, planets, zodiac] = await Promise.all([
-      listHouses() as Promise<RefList>,
-      listPlanets() as Promise<RefList>,
-      listZodiac() as Promise<RefList>,
-    ]);
-  } catch (e) {
-    error = e instanceof Error ? e.message : "Could not load reference data.";
-  }
+  // Fetch all 4 sources in parallel. We use Promise.allSettled so one slow or
+  // failing endpoint doesn't blank the whole page — each tab can independently
+  // render an "unavailable" state.
+  const [housesR, planetsR, zodiacR, dashaR] = await Promise.allSettled([
+    listHouses() as Promise<RefList>,
+    listPlanets() as Promise<RefList>,
+    listZodiac() as Promise<RefList>,
+    dashaTenure(),
+  ]);
+
+  const houses  = housesR.status  === "fulfilled" ? housesR.value  : null;
+  const planets = planetsR.status === "fulfilled" ? planetsR.value : null;
+  const zodiac  = zodiacR.status  === "fulfilled" ? zodiacR.value  : null;
+  const dasha: DashaTenureResponse | null =
+    dashaR.status === "fulfilled" ? dashaR.value : null;
+
+  const failed = [housesR, planetsR, zodiacR, dashaR].filter((r) => r.status === "rejected");
 
   return (
     <>
       <header className="mb-6 text-center">
         <h1 className="text-4xl text-[var(--accent-gold)]">Browse the Cosmos</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Every Bhava, Graha, and Rashi — with significance and keywords
+          Houses, planets, signs, and the 120-year Vimshottari cycle — all in one place
         </p>
       </header>
 
-      {error && (
+      {failed.length > 0 && failed.length === 4 && (
         <section className="my-6 rounded-lg border border-[rgba(248,113,113,0.35)] bg-[rgba(248,113,113,0.08)] p-4 text-sm text-[#f87171]">
-          {error}
+          Couldn&apos;t reach the backend. Is the API running at <code>{process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}</code>?
         </section>
       )}
 
-      {houses && (
-        <Section title={`12 Houses (Bhavas)`} count={houses.count}>
-          {houses.items.map((h) => (
-            <ItemCard
-              key={String(h.house_number)}
-              title={`${h.house_number}. ${h.english_name} (${h.sanskrit_name})`}
-              accent={`Ruling sign: ${h.ruling_sign} · Ruling planet: ${h.ruling_planet}`}
-              body={String(h.significance ?? "")}
-              keywords={String(h.keywords ?? "")}
-            />
-          ))}
-        </Section>
-      )}
-
-      {planets && (
-        <Section title="9 Planets (Grahas)" count={planets.count}>
-          {planets.items.map((p) => (
-            <ItemCard
-              key={String(p.english_name)}
-              title={`${p.symbol ?? ""} ${p.english_name} (${p.sanskrit_name})`}
-              accent={`Rules: ${p.rules_sign} · Exalted in ${p.exalted_in} · Debilitated in ${p.debilitated_in}`}
-              body={String(p.significance ?? "")}
-              keywords={String(p.keywords ?? "")}
-            />
-          ))}
-        </Section>
-      )}
-
-      {zodiac && (
-        <Section title="12 Zodiac Signs (Rashis)" count={zodiac.count}>
-          {zodiac.items.map((z) => (
-            <ItemCard
-              key={String(z.sign_number)}
-              title={`${z.sign_number}. ${z.english_name} (${z.sanskrit_name})`}
-              accent={`Lord: ${z.ruling_planet} · ${z.element} · ${z.quality}`}
-              body={String(z.significance ?? "")}
-              keywords={String(z.keywords ?? "")}
-            />
-          ))}
-        </Section>
-      )}
+      <BrowseTabs houses={houses} planets={planets} zodiac={zodiac} dasha={dasha} />
     </>
-  );
-}
-
-function Section({
-  title, count, children,
-}: { title: string; count: number; children: React.ReactNode }) {
-  return (
-    <section className="mb-10">
-      <h2 className="display mb-3 text-2xl text-[var(--accent-gold)]">
-        {title} <span className="ml-2 text-sm font-normal text-[var(--text-muted)]">· {count} entries</span>
-      </h2>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">{children}</div>
-    </section>
-  );
-}
-
-function ItemCard({
-  title, accent, body, keywords,
-}: { title: string; accent: string; body: string; keywords: string }) {
-  return (
-    <article className="glass p-4">
-      <h3 className="display text-base text-[var(--accent-gold)]">{title}</h3>
-      <p className="mt-1 text-xs text-[var(--text-muted)]">{accent}</p>
-      {body && <p className="mt-2 text-sm leading-relaxed text-[var(--text-main)]">{body}</p>}
-      {keywords && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {keywords.split(/[,;]\s*/).filter(Boolean).slice(0, 12).map((k) => (
-            <span
-              key={k}
-              className="rounded-full border border-[var(--border-glass)] bg-[rgba(15,17,35,0.6)] px-2 py-[2px] text-[0.7rem] text-[var(--text-muted)]"
-            >
-              {k}
-            </span>
-          ))}
-        </div>
-      )}
-    </article>
   );
 }
