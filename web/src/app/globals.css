@@ -1,0 +1,135 @@
+@import "tailwindcss";
+
+/* ---------- Design tokens ---------- */
+:root {
+  --bg-main:       #0a0b16;
+  --bg-card:       rgba(20, 22, 40, 0.55);
+  --bg-card-solid: #14162a;
+  --text-main:     #e8e6f0;
+  --text-muted:    rgba(232, 230, 240, 0.55);
+  --accent-purple: #8b5cf6;
+  --accent-gold:   #d4af37;
+  --border-glass:  rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+}
+
+@theme inline {
+  --color-bg: var(--bg-main);
+  --color-card: var(--bg-card);
+  --color-text: var(--text-main);
+  --color-muted: var(--text-muted);
+  --color-purple: var(--accent-purple);
+  --color-gold: var(--accent-gold);
+  --color-border: var(--border-glass);
+  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-display: 'Cinzel', serif;
+}
+
+html { background: var(--bg-main); }
+body {
+  background: var(--bg-main);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* ---------- Cosmic background orbs ---------- */
+.background-effects {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.35;
+}
+.orb-1 { width: 420px; height: 420px; background: #8b5cf6; top: -100px; left: -100px; }
+.orb-2 { width: 320px; height: 320px; background: #d4af37; top: 30%; right: -120px; opacity: 0.18; }
+.orb-3 { width: 360px; height: 360px; background: #6366f1; bottom: -120px; left: 30%; opacity: 0.25; }
+
+/* ---------- Cinzel display font for headings ---------- */
+h1, h2, h3, .display { font-family: var(--font-display); letter-spacing: 0.03em; }
+
+.glass {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ---------- Markdown reading ---------- */
+.markdown-reading h2 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent-gold);
+  margin: 1.25rem 0 0.45rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.18);
+}
+.markdown-reading h2:first-child { margin-top: 0.2rem; }
+.markdown-reading p {
+  margin: 0.5rem 0;
+  color: var(--text-main);
+  line-height: 1.7;
+}
+.markdown-reading strong { color: var(--accent-gold); font-weight: 500; }
+.markdown-reading em { color: var(--text-muted); font-style: italic; }
+
+/* ---------- South-Indian 4×4 chart cells ---------- */
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  aspect-ratio: 1;
+  gap: 2px;
+  background: var(--border-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.chart-cell {
+  background: var(--bg-card-solid);
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  position: relative;
+}
+.chart-cell.has-lagna {
+  outline: 2px solid var(--accent-gold);
+  outline-offset: -2px;
+}
+.chart-cell.center {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(212, 175, 55, 0.08));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.2em;
+  color: var(--accent-gold);
+}
+.cell-house { font-size: 0.6rem; color: var(--text-muted); letter-spacing: 0.06em; }
+.cell-sign { color: var(--accent-purple); font-size: 0.75rem; }
+.cell-planets { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: auto; }
+.cell-planet {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+}
+.cell-planet.exalted { color: #86efac; }
+.cell-planet.debilitated { color: #f87171; }
+.cell-planet.own { color: var(--accent-gold); }
+.cell-planet.neutral { color: var(--text-main); }

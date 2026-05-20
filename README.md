@@ -8,8 +8,7 @@ DBA timing analysis, and LLM-synthesized readings.
 ```
 .
 ├── backend/      FastAPI + Swiss Ephemeris + Gemini synthesis
-├── web/          Next.js (App Router) — new frontend (in progress)
-├── frontend/     Original vanilla HTML/JS (retired once `web/` reaches parity)
+├── web/          Next.js (App Router) — TypeScript + Tailwind
 └── docs/         Architecture & interpretation pipeline docs
 ```
 
@@ -22,16 +21,10 @@ pip install -r requirements.txt
 uvicorn api:app --reload --port 8000
 ```
 
-**Frontend (vanilla, current):**
-```bash
-cd frontend
-python3 -m http.server 5500
-# open http://localhost:5500/ask.html
-```
-
-**Frontend (Next.js, in progress):**
+**Frontend (Next.js):**
 ```bash
 cd web
+cp .env.example .env.local      # one-time; defaults to http://localhost:8000
 npm install
 npm run dev
 # open http://localhost:3000
