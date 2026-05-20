@@ -21,6 +21,8 @@ from search import semantic_search, trinity_search
 from prashna import compute_chart
 from narrate import cosmic_pulse
 from interpret import answer as interpret_question
+from dasha_table import DASHA_TENURE, DASHA_YEARS, VIMSHOTTARI_ORDER
+from dasha_analysis import analyze_dasha
 import datetime as _dt
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
@@ -175,6 +177,55 @@ def ask(
     result = interpret_question(q.strip(), chart)
     result["chart"] = chart  # include the chart so the frontend can show it inline
     return result
+
+
+# ---------------------------------------------------------------------------
+# Dasa Tenure Table  (May 19 Durga MOM — action item #2)
+# ---------------------------------------------------------------------------
+
+@app.get("/dasha/tenure")
+def dasha_tenure():
+    """The static Dasa Tenure Table — durations + Parashari signification
+    metadata for the 9 Vimshottari Mahadasha lords.
+
+    Use case: surface "what is Saturn dasha like?" in onboarding,
+    UI tooltips, or LLM context.
+    """
+    return {
+        "cycle_total_years": 120,
+        "order":             VIMSHOTTARI_ORDER,
+        "tenure":            DASHA_TENURE,
+        "years_only":        DASHA_YEARS,
+    }
+
+
+@app.get("/dasha/analyze")
+def dasha_analyze(
+    birth_dt: str = Query(..., description="Birth datetime in ISO 8601 (UTC). Example: 1990-06-15T10:30:00"),
+    when:     str | None = Query(None, description="ISO datetime to evaluate at; defaults to now"),
+):
+    """Personalized Vimshottari dasha analysis for a user.
+
+    Returns where they are in their MD/AD/PD journey, with metadata,
+    plus "completing soon" flags so the app can prepare them for the
+    next dasha cycle (May 19 MOM use case).
+
+    Note: only requires birth datetime — Moon longitude is location-
+    independent. Lat/lon would be needed for natal Lagna (not used here).
+    """
+    try:
+        birth = _dt.datetime.fromisoformat(birth_dt.replace("Z", "+00:00"))
+    except ValueError:
+        return {"error": f"Bad birth_dt: {birth_dt}"}
+
+    when_dt = None
+    if when:
+        try:
+            when_dt = _dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            return {"error": f"Bad when: {when}"}
+
+    return analyze_dasha(birth, when_dt)
 
 
 @app.get("/search")
