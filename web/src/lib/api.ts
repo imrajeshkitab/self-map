@@ -115,3 +115,84 @@ export async function dashaTenure(): Promise<DashaTenureResponse> {
   if (!res.ok) throw new Error(`/dasha/tenure failed: ${res.status}`);
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Audit log (May 19 MOM #3)
+// ---------------------------------------------------------------------------
+
+export type AuditEntry = {
+  id: number;
+  created_at: string;
+  request_ms: number | null;
+  question: string;
+  source: string | null;
+  selected_houses: string | null;        // comma-separated
+  natural_karakas: string | null;        // comma-separated
+  intent_label: string | null;
+  total_score: number | null;
+  verdict_label: string | null;
+  verdict_confidence: string | null;
+  answer_source: "gemini" | "template" | null;
+};
+
+export type AuditSummary = {
+  total: number;
+  by_source: Record<string, number>;
+  by_verdict: Record<string, number>;
+  by_answer_source: Record<string, number>;
+  fallback_rate: number;
+  llm_hiccup_rate: number;
+  single_candidate_rate: number;
+  llm_pick_rate: number;
+  avg_request_ms: number | null;
+  error_count: number;
+  since: string | null;
+};
+
+export type UnmatchedToken = {
+  token: string;
+  count: number;
+  examples: { id: number; question: string }[];
+};
+
+export type AuditRecentParams = {
+  limit?: number;
+  source?: string;
+  verdict?: string;
+  since?: string;
+};
+
+export async function auditRecent(params: AuditRecentParams = {}): Promise<{
+  count: number;
+  filters: { source: string | null; verdict: string | null; since: string | null };
+  items: AuditEntry[];
+}> {
+  const url = new URL(`${API_BASE}/audit/recent`);
+  if (params.limit !== undefined) url.searchParams.set("limit", String(params.limit));
+  if (params.source) url.searchParams.set("source", params.source);
+  if (params.verdict) url.searchParams.set("verdict", params.verdict);
+  if (params.since) url.searchParams.set("since", params.since);
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`/audit/recent failed: ${res.status}`);
+  return res.json();
+}
+
+export async function auditSummary(since?: string): Promise<AuditSummary> {
+  const url = new URL(`${API_BASE}/audit/summary`);
+  if (since) url.searchParams.set("since", since);
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`/audit/summary failed: ${res.status}`);
+  return res.json();
+}
+
+export async function auditUnmatchedTokens(
+  limit = 20,
+  since?: string,
+): Promise<{ since: string | null; tokens: UnmatchedToken[] }> {
+  const url = new URL(`${API_BASE}/audit/unmatched-tokens`);
+  url.searchParams.set("limit", String(limit));
+  if (since) url.searchParams.set("since", since);
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`/audit/unmatched-tokens failed: ${res.status}`);
+  return res.json();
+}
