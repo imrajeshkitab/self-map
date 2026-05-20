@@ -114,6 +114,13 @@ export type TokenMatch = {
   houses: number[];
   ambiguous: boolean;
   override?: boolean;
+  /** Present when the token was matched via semantic similarity rather than
+   *  a direct dictionary hit. Shows which dictionary word the embedding
+   *  matched against, and the cosine similarity score [0, 1]. */
+  semantic_match?: {
+    matched_word: string;
+    similarity: number;
+  } | null;
 };
 
 export type HouseCandidate = {
@@ -124,6 +131,8 @@ export type HouseCandidate = {
 
 export type MappingTrace = {
   tokens: string[];
+  /** Stopwords + tokens too short to be meaningful (e.g. articles, pronouns). */
+  tokens_dropped?: string[];
   tokens_matched: TokenMatch[];
   tokens_unmatched: string[];
   candidates: HouseCandidate[];

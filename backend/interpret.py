@@ -244,10 +244,10 @@ def _llm_pick_houses(question: str, trace: dict) -> tuple[list[int], str | None]
     Returns (selected_houses, reasoning). Falls back to top-N-by-score on failure.
     """
     candidates = trace["candidates"]
-    top_by_score = [c["house"] for c in candidates[:3]]
+    top_by_score = [c["house"] for c in candidates[:6]]
 
     if not _configure_gemini():
-        return top_by_score[:2], None
+        return top_by_score[:4], None
 
     # Build a compact, LLM-friendly table of candidates + house meanings
     house_labels = house_mapper.HOUSE_LABELS
@@ -295,15 +295,15 @@ Return ONLY a JSON object, no surrounding text:
         data = json.loads(text)
         picked = data.get("selected_houses") or []
         if not isinstance(picked, list):
-            return top_by_score[:2], None
+            return top_by_score[:4], None
         # Sanitize: only houses that were actually in the candidate set
         valid_houses = {c["house"] for c in candidates}
         picked_valid = [int(h) for h in picked if isinstance(h, (int, str)) and int(h) in valid_houses]
         if not picked_valid:
-            return top_by_score[:2], data.get("reasoning")
+            return top_by_score[:4], data.get("reasoning")
         return picked_valid[:3], data.get("reasoning")
     except Exception:
-        return top_by_score[:2], None
+        return top_by_score[:4], None
 
 
 def _domain_map_fallback(question: str) -> dict:
