@@ -1,0 +1,21 @@
+# Backend dependencies for the Prashna / Today's Sky / Search API.
+# Pinned to the versions verified in the local dev environment.
+
+# API
+fastapi==0.115.0
+uvicorn==0.30.0
+
+# Vedic astronomy (Swiss Ephemeris)
+pyswisseph==2.10.3.2
+
+# LLM
+google-generativeai==0.8.5
+python-dotenv==1.0.1
+
+# Word→house dictionary (WordNet expansion of curated seeds)
+nltk==3.9.2
+
+# Semantic search (used by /search endpoint)
+sentence-transformers==5.1.1
+numpy==2.3.5
+scikit-learn==1.7.2
