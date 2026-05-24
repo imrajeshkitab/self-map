@@ -1,24 +1,43 @@
 """
 embeddings.py
 Builds a semantic search index for all houses, planets, and zodiac signs
-using sentence-transformers (true semantic similarity, not keyword matching).
+using Google's `gemini-embedding-001` (the same model used for the
+word-to-house dictionary's semantic fallback).
 
-First run will download the model (~90MB). Subsequent runs are offline.
-
-Run this:
-    python embeddings.py
+Migrated from sentence-transformers — PyTorch + a local model bundle to
+>250MB, exceeding Vercel's serverless function size limit. Same idea,
+just a network call per item at build time instead of local inference.
 
 Re-run anytime new content is added to the DB (e.g. after book enrichment).
+
+Run:
+    python embeddings.py
 """
 
 import sqlite3
 import os
 import pickle
-from sentence_transformers import SentenceTransformer
+import sys
+import time
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
+import numpy as np
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_PATH    = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
 INDEX_PATH = os.path.join(os.path.dirname(__file__), "search_index.pkl")
-MODEL_NAME = "all-MiniLM-L6-v2"
+
+# Same model + truncated dimensionality as the dictionary index. Using the
+# RETRIEVAL_DOCUMENT task type for what we encode here (the canonical
+# descriptions); query-time uses RETRIEVAL_QUERY (asymmetric retrieval,
+# the right pair for "find docs matching a query"). 768 dims keeps the
+# bundled index small.
+MODEL_NAME = "models/gemini-embedding-001"
+TASK_TYPE  = "RETRIEVAL_DOCUMENT"
+OUTPUT_DIM = 768
+BATCH_SIZE = 100
 
 
 def build_rich_text(entity_type, row):
@@ -63,18 +82,45 @@ def build_index():
 
     conn.close()
 
-    print(f"Loading model: {MODEL_NAME}...")
-    model = SentenceTransformer(MODEL_NAME)
-    print(f"Encoding {len(documents)} documents...")
-    embeddings = model.encode(documents, normalize_embeddings=True, show_progress_bar=True)
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        print("ERROR: GEMINI_API_KEY not set.", file=sys.stderr)
+        sys.exit(1)
+    genai.configure(api_key=key)
+
+    print(f"Encoding {len(documents)} documents with {MODEL_NAME}...")
+    all_vecs: list[np.ndarray] = []
+    for i in range(0, len(documents), BATCH_SIZE):
+        batch = documents[i : i + BATCH_SIZE]
+        resp = genai.embed_content(
+            model=MODEL_NAME,
+            content=batch,
+            task_type=TASK_TYPE,
+            output_dimensionality=OUTPUT_DIM,
+        )
+        vecs = np.array(resp["embedding"], dtype=np.float32)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        vecs = vecs / np.clip(norms, 1e-12, None)
+        all_vecs.append(vecs)
+        time.sleep(0.05)
+    embeddings = np.vstack(all_vecs)
 
     with open(INDEX_PATH, "wb") as f:
-        pickle.dump({"model_name": MODEL_NAME, "embeddings": embeddings, "metadata": metadata}, f)
+        pickle.dump(
+            {
+                "model_name": MODEL_NAME,
+                "task_type":  TASK_TYPE,
+                "embeddings": embeddings,
+                "metadata":   metadata,
+            },
+            f,
+        )
 
+    print(f"Index shape: {embeddings.shape}  ({embeddings.nbytes / 1024:.1f} KB)")
     return len(documents)
 
 
 if __name__ == "__main__":
-    print("\n🔮 Building semantic search index (sentence-transformers)...")
+    print("\n🔮 Building semantic search index via Google text-embedding-005...")
     count = build_index()
     print(f"✅ Done — {count} entities indexed and ready\n")
