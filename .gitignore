@@ -15,9 +15,17 @@ env/
 
 # Database
 *.db
+# … except the read-only reference DB used by /houses, /planets, /zodiac.
+# Stable, hand-curated content; ships with the deploy.
+# audit.db (Neon-replaced legacy SQLite log) stays ignored.
+!backend/vedic_astrology.db
 
 # Pickle / serialized files
 *.pkl
+# … except the pre-built embedding indexes, which are stable artifacts
+# bundled with the deploy and rebuilt only when source data changes.
+!backend/dict_embeddings.pkl
+!backend/search_index.pkl
 
 # IDE
 .vscode/

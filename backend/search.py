@@ -1,7 +1,13 @@
 """
 search.py
-Semantic search engine — finds closest matches for any query
-using sentence-transformer embeddings + cosine similarity.
+Semantic search engine — finds closest matches for any query among
+houses / planets / zodiac signs via Google embedding similarity.
+
+Migrated from sentence-transformers (PyTorch, ~500MB bundle, doesn't
+fit Vercel's serverless function size limit) to Google's
+`gemini-embedding-001` accessed through the existing google-generativeai
+SDK. Same architecture: pre-built embedding index on disk + a single
+query-time embedding API call + dot-product over the index.
 
 Usage:
     python search.py "career and money"
@@ -13,31 +19,79 @@ import os
 import sys
 import pickle
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 INDEX_PATH = os.path.join(os.path.dirname(__file__), "search_index.pkl")
 
 _index = None
-_model = None
+_genai_configured = False
+
+
+def _ensure_genai_configured() -> bool:
+    """Configure the Google generative-ai SDK once. Returns False if no
+    GEMINI_API_KEY is set."""
+    global _genai_configured
+    if _genai_configured:
+        return True
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        return False
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=key)
+        _genai_configured = True
+        return True
+    except Exception:
+        return False
 
 
 def load_index():
-    global _index, _model
+    """Lazy-load the pre-built embedding index (parallel to house_mapper)."""
+    global _index
     if _index is None:
         if not os.path.exists(INDEX_PATH):
-            raise FileNotFoundError("Search index not found. Run: python embeddings.py")
+            raise FileNotFoundError(
+                "Search index not found. Run: python embeddings.py"
+            )
         with open(INDEX_PATH, "rb") as f:
             _index = pickle.load(f)
-        _model = SentenceTransformer(_index["model_name"])
-    return _index, _model
+    return _index
+
+
+def _embed_query(query: str, model_name: str, task_type: str, output_dim: int) -> np.ndarray | None:
+    """Embed a query via Google's embedding API + L2-normalise. Returns
+    None if the SDK isn't configured or the call fails — callers should
+    treat that as "search unavailable" and degrade gracefully."""
+    if not _ensure_genai_configured():
+        return None
+    try:
+        import google.generativeai as genai
+        resp = genai.embed_content(
+            model=model_name,
+            content=query,
+            task_type=task_type,
+            output_dimensionality=output_dim,
+        )
+        vec = np.array(resp["embedding"], dtype=np.float32)
+        n = float(np.linalg.norm(vec))
+        return vec / max(n, 1e-12)
+    except Exception:
+        return None
 
 
 def _rank_all(query: str):
-    index, model = load_index()
+    index = load_index()
     embeddings = index["embeddings"]
     metadata = index["metadata"]
 
-    query_vec = model.encode([query], normalize_embeddings=True)[0]
+    query_vec = _embed_query(
+        query,
+        model_name=index.get("model_name", "models/gemini-embedding-001"),
+        task_type=index.get("task_type", "RETRIEVAL_QUERY"),
+        output_dim=int(embeddings.shape[1]),
+    )
+    if query_vec is None:
+        return []   # graceful degradation if embeddings aren't available
+
     scores = embeddings @ query_vec  # cosine sim (vectors are normalized)
 
     ranked = []

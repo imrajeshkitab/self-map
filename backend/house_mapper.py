@@ -48,21 +48,23 @@ except FileNotFoundError:
 # ---------------------------------------------------------------------------
 #
 # Threshold: we only accept a semantic match if cosine similarity ≥ this.
-# Tuned at 0.70 — high enough to reject the loud lexical-overlap false
-# positives (time↔timework 0.69, grow↔growth 0.68, watch↔watchword 0.59)
-# while still admitting genuine synonyms / verb↔noun forms:
-#   marry↔marriage 0.85 · married↔married_man 0.89 · invest↔investing 0.91
-# When a token falls below threshold it's surfaced as unmatched in the
-# audit trace — better to honestly say "we don't know" than to invent a
-# wrong mapping that misleads the reading.
-SEMANTIC_THRESHOLD = 0.70
+# Calibrated for the Gemini text-embedding model (`gemini-embedding-001`,
+# 768-dim truncation) — its similarity distribution sits much higher than
+# sentence-transformers/MiniLM did. With Gemini embeddings:
+#   marry↔marriage 0.95 · married↔married_person 0.98 · invest↔investing 0.98
+#   time↔timework 0.93 · watch↔watch_night 0.93 · startup↔start 0.94
+# 0.95 splits the genuine matches from the loose lexical neighbours
+# cleanly. (Previously 0.70 on MiniLM — DO NOT lower this without
+# re-evaluating; the embedding spaces aren't comparable.)
+SEMANTIC_THRESHOLD = 0.95
 
-_SEM_INDEX: dict | None = None       # {model_name, words, embeddings (np.ndarray)}
-_SEM_MODEL = None                    # SentenceTransformer instance (lazy)
+_SEM_INDEX: dict | None = None       # {model_name, task_type, words, embeddings (np.ndarray)}
+_GENAI_CONFIGURED = False
 
 
 def _load_sem_index() -> dict | None:
-    """Lazy-load the dictionary embedding index. Returns None if unavailable."""
+    """Lazy-load the dictionary embedding index. Returns None if unavailable
+    (file missing on disk → semantic_match gracefully degrades to "no match")."""
     global _SEM_INDEX
     if _SEM_INDEX is not None:
         return _SEM_INDEX
@@ -76,18 +78,49 @@ def _load_sem_index() -> dict | None:
         return None
 
 
-def _get_sem_model():
-    """Lazy-load the SentenceTransformer model (heavy — ~100MB RAM)."""
-    global _SEM_MODEL
-    if _SEM_MODEL is not None:
-        return _SEM_MODEL
-    idx = _load_sem_index()
-    if idx is None:
+def _ensure_genai_configured() -> bool:
+    """Configure the Google generative-ai SDK once. Returns False if no
+    GEMINI_API_KEY is set — caller should treat that as "embeddings
+    unavailable" and skip semantic matching."""
+    global _GENAI_CONFIGURED
+    if _GENAI_CONFIGURED:
+        return True
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        return False
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=key)
+        _GENAI_CONFIGURED = True
+        return True
+    except Exception:
+        return False
+
+
+def _embed_query(
+    token: str,
+    model_name: str,
+    task_type: str,
+    output_dim: int,
+) -> "np.ndarray | None":
+    """Embed a single query token via Google's embedding API and L2-normalise.
+    `output_dim` must match what was used to build the dictionary index —
+    we store it alongside the index so callers can pass it through.
+    Returns None on any failure so callers can fall back to "no match"."""
+    if not _ensure_genai_configured():
         return None
     try:
-        from sentence_transformers import SentenceTransformer
-        _SEM_MODEL = SentenceTransformer(idx["model_name"])
-        return _SEM_MODEL
+        import google.generativeai as genai
+        import numpy as np
+        resp = genai.embed_content(
+            model=model_name,
+            content=token,
+            task_type=task_type,
+            output_dimensionality=output_dim,
+        )
+        vec = np.array(resp["embedding"], dtype=np.float32)
+        n = float(np.linalg.norm(vec))
+        return vec / max(n, 1e-12)
     except Exception:
         return None
 
@@ -95,15 +128,28 @@ def _get_sem_model():
 def semantic_match(token: str) -> tuple[str, float] | None:
     """Return (closest dictionary word, similarity) above threshold, or None.
 
-    Uses cosine similarity (= dot product since embeddings are L2-normalised).
+    Implementation:
+      1. Load the pre-built dictionary embedding index from disk.
+      2. Embed the query token via Google text-embedding-004 over HTTP.
+      3. Cosine-sim against the index (= dot product, both L2-normed).
+      4. Return the best match if it clears SEMANTIC_THRESHOLD.
+
+    The pre-built index is ~15 MB (5K words × 768 dims × 4 bytes) — bundled
+    with the function. Only the query embedding is a network call.
     """
     idx = _load_sem_index()
-    model = _get_sem_model()
-    if idx is None or model is None:
+    if idx is None:
         return None
     import numpy as np
-    query_vec = model.encode([token], normalize_embeddings=True)[0]
-    sims = idx["embeddings"] @ query_vec       # cosine, since both normed
+    query_vec = _embed_query(
+        token,
+        model_name=idx.get("model_name", "models/gemini-embedding-001"),
+        task_type=idx.get("task_type", "SEMANTIC_SIMILARITY"),
+        output_dim=int(idx["embeddings"].shape[1]),    # match the index's dim
+    )
+    if query_vec is None:
+        return None
+    sims = idx["embeddings"] @ query_vec        # cosine, since both normed
     best_i = int(np.argmax(sims))
     best_sim = float(sims[best_i])
     if best_sim < SEMANTIC_THRESHOLD:

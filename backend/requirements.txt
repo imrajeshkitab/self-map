@@ -1,5 +1,6 @@
 # Backend dependencies for the Prashna / Today's Sky / Search API.
 # Pinned to the versions verified in the local dev environment.
+# Sized to fit inside Vercel's Python serverless function bundle limit.
 
 # API
 fastapi==0.115.0
@@ -12,10 +13,23 @@ pyswisseph==2.10.3.2
 google-generativeai==0.8.5
 python-dotenv==1.0.1
 
-# Word→house dictionary (WordNet expansion of curated seeds)
-nltk==3.9.2
+# Postgres (Neon) — replaces SQLite for the audit log, since serverless
+# functions have ephemeral disk
+psycopg[binary]==3.3.4
 
-# Semantic search (used by /search endpoint)
-sentence-transformers==5.1.1
+# Numeric utilities (the dot product against the pre-built embedding index)
 numpy==2.3.5
-scikit-learn==1.7.2
+
+# NOTE: nltk was dropped from runtime deps. It's used ONLY by the offline
+# dictionary builder (`build_house_dict.py` — WordNet expansion of seed
+# words). The runtime mapper reads the already-built house_dictionary.json,
+# so NLTK doesn't need to ship to Vercel. Install locally on-demand:
+#   pip install nltk && python -c "import nltk; nltk.download('wordnet')"
+# before re-running build_house_dict.py.
+
+# NOTE: sentence-transformers + scikit-learn were dropped in the
+# Vercel-native migration. Sentence-transformers (PyTorch) bundles to
+# >250 MB and blows the serverless function size limit. Embeddings for
+# the semantic-match fallback are now done via Google's
+# `text-embedding-004` model through the existing google-generativeai
+# SDK — see backend/house_mapper.py and backend/build_dict_embeddings.py.
