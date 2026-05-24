@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { DashaTenureResponse, DashaTenureEntry } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useSessionState } from "@/lib/useSessionState";
 
 type RefItem = Record<string, unknown>;
 type RefList = { count: number; items: RefItem[] };
@@ -24,7 +25,7 @@ export function BrowseTabs({
   zodiac: RefList | null;
   dasha: DashaTenureResponse | null;
 }) {
-  const [active, setActive] = useState<TabKey>("bhavas");
+  const [active, setActive] = useSessionState<TabKey>("browse-tab", "bhavas");
 
   return (
     <>

@@ -12,6 +12,7 @@ import { PrashnaChart } from "@/components/PrashnaChart";
 import { ChartMetadata } from "@/components/ChartMetadata";
 import { DbaPanel } from "@/components/DbaPanel";
 import { CosmicWeather } from "@/components/CosmicWeather";
+import { useSessionState } from "@/lib/useSessionState";
 
 const EXAMPLES = [
   "Will my career grow this year?",
@@ -21,18 +22,21 @@ const EXAMPLES = [
 ];
 
 export default function AskPage() {
-  const [question, setQuestion] = useState("");
+  const [question, setQuestion] = useSessionState("ask-question", "");
   // Start with stable empty date/time so SSR HTML matches the first client
-  // render — populate the actual "now" only after mount.
-  const [moment, setMoment] = useState<MomentValue>(() => emptyMoment());
+  // render — populate the actual "now" only after mount (or restore from session).
+  const [moment, setMoment, momentHydrated] = useSessionState<MomentValue>("ask-moment", emptyMoment);
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<AskResponse | null>(null);
+  const [data, setData] = useSessionState<AskResponse | null>("ask-data", null);
   const [error, setError] = useState<string | null>(null);
 
-  // Populate the real "now" on the client. Empty deps → runs once after mount.
+  // Populate the real "now" on the client — but only if the session didn't
+  // already have a stored moment (i.e. date/time are still empty after hydration).
   useEffect(() => {
-    setMoment(defaultMoment());
-  }, []);
+    if (!momentHydrated) return;
+    if (!moment.date || !moment.time) setMoment(defaultMoment());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once after hydration
+  }, [momentHydrated]);
 
   // Keep the local-clock display in the meta line live-updating once a minute.
   const [tick, setTick] = useState(0);

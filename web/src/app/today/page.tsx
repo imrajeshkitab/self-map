@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { today } from "@/lib/api";
 import type { Chart } from "@/lib/types";
 import { MomentControls, defaultMoment, emptyMoment, toIsoWhen, type MomentValue } from "@/components/MomentControls";
@@ -8,18 +8,25 @@ import { PrashnaChart } from "@/components/PrashnaChart";
 import { ChartMetadata } from "@/components/ChartMetadata";
 import { DbaPanel } from "@/components/DbaPanel";
 import { CosmicWeather } from "@/components/CosmicWeather";
+import { useSessionState } from "@/lib/useSessionState";
 
 export default function TodayPage() {
   // Stable empty date/time on first render — SSR HTML matches client hydration.
-  // The real "now" is populated by the effect below, then the chart fetch fires.
-  const [moment, setMoment] = useState<MomentValue>(() => emptyMoment());
-  const [chart, setChart] = useState<Chart | null>(null);
+  // The real "now" is populated by the effect below (or restored from session).
+  const [moment, setMoment, momentHydrated] = useSessionState<MomentValue>("today-moment", emptyMoment);
+  const [chart, setChart, chartHydrated] = useSessionState<Chart | null>("today-chart", null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Track whether we should skip the first chart fetch (because chart was
+  // restored from session and moment hasn't changed yet).
+  const skipInitialFetch = useRef(true);
+
   useEffect(() => {
-    setMoment(defaultMoment());
-  }, []);
+    if (!momentHydrated) return;
+    if (!moment.date || !moment.time) setMoment(defaultMoment());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once after hydration
+  }, [momentHydrated]);
 
   const load = useCallback(async (m: MomentValue) => {
     setLoading(true);
@@ -38,13 +45,18 @@ export default function TodayPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setChart]);
 
-  // Initial load + reload whenever moment changes. Skip the SSR-safe empty
-  // state so we don't fire an extra request before the populate effect runs.
+  // Fetch chart whenever moment changes. Skip the first trigger if we
+  // already have a chart restored from session (avoids a redundant API call).
   useEffect(() => {
     if (!moment.date || !moment.time) return;
+    if (skipInitialFetch.current) {
+      skipInitialFetch.current = false;
+      if (chart && chartHydrated) return; // already have session-restored chart
+    }
     void load(moment);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chart is intentionally excluded
   }, [moment, load]);
 
   return (

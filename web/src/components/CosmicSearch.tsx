@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { search } from "@/lib/api";
+import { useSessionState } from "@/lib/useSessionState";
 
 type Item = Record<string, unknown> & {
   category?: string;
@@ -17,11 +18,11 @@ type TrinitySlot = Item | null;
 const QUICK = ["wealth", "relationships", "health", "spiritual growth", "career", "marriage"];
 
 export function CosmicSearch() {
-  const [q, setQ] = useState("");
+  const [q, setQ] = useSessionState("search-q", "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [trinity, setTrinity] = useState<{ house: TrinitySlot; planet: TrinitySlot; zodiac: TrinitySlot } | null>(null);
-  const [overflow, setOverflow] = useState<Item[]>([]);
+  const [trinity, setTrinity] = useSessionState<{ house: TrinitySlot; planet: TrinitySlot; zodiac: TrinitySlot } | null>("search-trinity", null);
+  const [overflow, setOverflow] = useSessionState<Item[]>("search-overflow", []);
 
   const run = async (query: string) => {
     const term = query.trim();
