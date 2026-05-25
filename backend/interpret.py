@@ -24,7 +24,13 @@ import google.generativeai as genai
 import house_mapper
 
 load_dotenv()
-GEMINI_MODEL = "gemini-2.0-flash"
+# Latest stable Gemini, verified to handle the polarity-flipping cases
+# correctly (gemini-3.1-pro-preview tripped on the "avoid" negation test;
+# 3.5-flash passed). Same model used for both polarity classification
+# and narrative synthesis.
+GEMINI_MODEL = "gemini-3.5-flash"
+# Legacy alias kept so older sites don't break; same model.
+GEMINI_LEGACY_MODEL = GEMINI_MODEL
 _configured = False
 
 
@@ -239,71 +245,218 @@ def classify_question(question: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _llm_pick_houses(question: str, trace: dict) -> tuple[list[int], str | None]:
-    """Ask Gemini to pick 1-3 houses from the dictionary's narrowed candidate set.
-    Returns (selected_houses, reasoning). Falls back to top-N-by-score on failure.
+# ---------------------------------------------------------------------------
+# Polarity classification — the new LLM step (May-meeting follow-up).
+# ---------------------------------------------------------------------------
+#
+# Replaces _llm_pick_houses. Where the old version asked "pick 1-3 houses",
+# the new version asks "given the user's actual intent, classify each
+# candidate house as favourable (strength = helpful to user's preferred
+# outcome) or unfavourable (strength = obstacle to it)".
+#
+# Why this matters: bag-of-words misses negation, escape verbs, and tense.
+# "Will I lose my job?" and "Will my career grow?" hit the SAME tokens but
+# need OPPOSITE polarity on H10. The LLM is the only layer that can read
+# the full sentence and decide.
+#
+# Hallucination control:
+#   1. JSON schema enforcement via response_schema — the model literally
+#      cannot return malformed output.
+#   2. Temperature 0 — deterministic for a given prompt.
+#   3. Candidate set is constrained to (dictionary candidates ∪ structural
+#      dusthana); LLM is *permitted* to add up to 2 outside houses with
+#      explicit reasoning, surfaced as `llm_added_houses` in the trace.
+#   4. Examples in the prompt explicitly walk through the "avoid" polarity
+#      flip — this was the case where the older gemini-3.1-pro-preview
+#      tripped during our model selection probe.
+
+
+def _structural_opposition(primary_house: int) -> dict[int, str]:
+    """For any primary house, return the classical dusthana relationships:
+       6th-from-primary  → obstacles / disputes about the matter
+       8th-from-primary  → sudden disruption / endings of the matter
+       12th-from-primary → loss / dissolution of the matter
+    Returns {house_num: relationship_label}. House numbers wrap 1..12.
+    """
+    rotate = lambda p, offset: ((p - 1 + offset - 1) % 12) + 1
+    return {
+        rotate(primary_house, 6):  f"6th-from-H{primary_house} (obstacles/disputes)",
+        rotate(primary_house, 8):  f"8th-from-H{primary_house} (sudden disruption)",
+        rotate(primary_house, 12): f"12th-from-H{primary_house} (loss/dissolution)",
+    }
+
+
+# JSON schema the LLM is constrained to produce.
+# Gemini's response_schema is a SUBSET of JSON Schema — it does NOT accept
+# minItems / maxItems / minimum / maximum on items. We enforce those
+# constraints in Python after parsing (see sanitization in _llm_classify_houses).
+_POLARITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "user_intent": {
+            "type": "string",
+            "enum": ["achieve", "avoid", "predict", "decide", "timing", "quality"],
+            "description": (
+                "What the user actually wants: "
+                "'achieve' (e.g. will career grow), "
+                "'avoid' (e.g. should I avoid this marriage), "
+                "'predict' (e.g. will it rain — no clear preference), "
+                "'decide' (e.g. should I take this job — wants advice), "
+                "'timing' (e.g. when will I marry), "
+                "'quality' (e.g. how will the trip go — character not yes/no)."
+            ),
+        },
+        "intent_summary": {
+            "type": "string",
+            "description": "One sentence in plain language describing what the user wants. Should cite specific words from their question.",
+        },
+        "negation_detected": {
+            "type": "boolean",
+            "description": "Did the question contain a polarity-flipping phrase ('avoid', 'not', 'never', 'lose', 'escape', 'leave', 'quit')?",
+        },
+        "favourable_houses": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Up to 3 houses (1-12) whose STRENGTH supports the user's preferred outcome. First house is the primary. At least 1 required.",
+        },
+        "unfavourable_houses": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Up to 3 houses (1-12) whose STRENGTH would obstruct the user's preferred outcome. May be empty.",
+        },
+        "llm_added_houses": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Up to 2 houses (1-12) you added that were NOT in the candidate set. Each must be justified in `reasoning`. May be empty.",
+        },
+        "reasoning": {
+            "type": "string",
+            "description": (
+                "2-3 sentences justifying your picks. MUST cite specific words "
+                "from the user's question. MUST explain any house you added "
+                "outside the candidate set. Do not write generic statements."
+            ),
+        },
+    },
+    "required": [
+        "user_intent", "intent_summary", "negation_detected",
+        "favourable_houses", "unfavourable_houses", "reasoning",
+    ],
+}
+
+
+def _llm_classify_houses(
+    question: str, trace: dict
+) -> dict | None:
+    """Ask Gemini to classify candidate houses as favourable or unfavourable
+    for the user's preferred outcome.
+
+    Returns the parsed schema-conformant dict, or None on configuration
+    failure (caller falls back to top-N-by-score with empty unfavourable list).
+    Network/API errors also return None — graceful degradation.
     """
     candidates = trace["candidates"]
-    top_by_score = [c["house"] for c in candidates[:6]]
+    if not candidates or not _configure_gemini():
+        return None
 
-    if not _configure_gemini():
-        return top_by_score[:4], None
+    # Top candidate's primary becomes the anchor for structural opposition.
+    primary = candidates[0]["house"]
+    opposition = _structural_opposition(primary)
 
-    # Build a compact, LLM-friendly table of candidates + house meanings
+    # Build a deduplicated candidate union (dictionary + structural opposition).
     house_labels = house_mapper.HOUSE_LABELS
-    candidate_lines = []
-    for c in candidates[:6]:    # show at most 6
+    candidate_lines: list[str] = []
+    for c in candidates[:6]:
         toks = ", ".join(c["supporting_tokens"])
         candidate_lines.append(
-            f"  H{c['house']:>2}  score={c['score']}  "
-            f"meaning={house_labels.get(c['house'], '?')}  "
-            f"matched_tokens=[{toks}]"
+            f"  H{c['house']:>2}  (dictionary match: \"{toks}\")  — {house_labels.get(c['house'], '?')}"
         )
-    candidates_table = "\n".join(candidate_lines)
+    opposition_lines: list[str] = []
+    for h, label in opposition.items():
+        # Only add to the prompt if not already a dictionary candidate (avoid duplication)
+        if h not in {c["house"] for c in candidates[:6]}:
+            opposition_lines.append(
+                f"  H{h:>2}  ({label})  — {house_labels.get(h, '?')}"
+            )
 
-    prompt = f"""You are mapping a Prashna (horary) question to the relevant Vedic houses.
+    prompt = f"""You are a Prashna (horary Vedic astrology) house classifier.
 
-The user asked: "{question}"
+USER QUESTION: "{question}"
 
-A deterministic dictionary lookup of the words in their question produced
-these candidate houses, ranked by score:
+# DICTIONARY-DERIVED CANDIDATES (matched via word→house mapping):
+{chr(10).join(candidate_lines)}
 
-{candidates_table}
+# STRUCTURAL OPPOSITION (auto-derived from primary candidate H{primary}):
+{chr(10).join(opposition_lines) if opposition_lines else "  (none — primary's dusthana houses are already in the dictionary candidates)"}
 
-Your task: pick the 1-3 houses most relevant to THIS specific question.
+# YOUR TASK
+1. Identify what the user ACTUALLY wants. Cite specific words from their question.
+2. Classify each relevant house as FAVOURABLE or UNFAVOURABLE relative to that preferred outcome.
 
-Rules:
-  - Prefer FEWER houses with stronger signal over more houses with weak signal.
-  - Only include a house if its match makes semantic sense for the question.
-  - The first house in your list should be the PRIMARY house (most central).
-  - Do NOT pick houses that aren't in the candidate list — the dictionary
-    already narrowed the relevant set.
-  - If two candidates are equally relevant, prefer the one with higher score.
+# CRITICAL POLARITY RULES
+- "Will my career grow?"     → user wants growth.   H10 strong = ✅ favourable.
+- "Will I lose my job?"      → user fears loss.     H10 strong = ✅ favourable (job is safe);  H8/H12 strong = ❌ unfavourable.
+- "Should I avoid X?"        → user wants to avoid X. House of X strong = ❌ unfavourable (X is robust, hard to avoid).
+- "Should I quit my job?"    → user is considering leaving. H10 strong = ❌ unfavourable (job is solid, hard to leave); H8 strong = ✅ favourable (easy transition).
+- "Will my marriage last?"   → user wants it to last. H7/H2 strong = ✅ favourable; H8/H12 strong = ❌ unfavourable.
 
-Return ONLY a JSON object, no surrounding text:
-{{"selected_houses": [5], "reasoning": "movie maps to the 5th house of entertainment"}}
-"""
+# WORD-LEVEL POLARITY TRIGGERS (set negation_detected=true if any appear)
+"avoid", "not", "never", "without", "lose", "escape", "leave", "quit",
+"end", "break", "cancel", "skip", "refuse", "reject"
+
+# RULES ON HOUSE SELECTION
+- favourable_houses: 1-3 houses. The FIRST is the primary house.
+- unfavourable_houses: 0-3 houses. Empty list is allowed for pure prediction
+  questions where no obstacle factors are obvious from the question.
+- Prefer houses from the candidate union above. You MAY add up to 2 houses
+  outside this set IF they are astrologically critical AND not in the union
+  — list them in llm_added_houses and justify in reasoning.
+- A house may appear in EITHER favourable_houses OR unfavourable_houses,
+  never both.
+
+Be precise and conservative. If unsure, return fewer houses with higher confidence."""
 
     try:
         model = genai.GenerativeModel(GEMINI_MODEL)
-        resp = model.generate_content(prompt)
+        resp = model.generate_content(
+            prompt,
+            generation_config={
+                "response_mime_type": "application/json",
+                "response_schema": _POLARITY_SCHEMA,
+                "temperature": 0,
+            },
+        )
         text = (resp.text or "").strip()
-        # Strip code fences if Gemini wraps the JSON
-        if text.startswith("```"):
-            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-            text = re.sub(r"\n?```\s*$", "", text)
+        if not text:
+            return None
         data = json.loads(text)
-        picked = data.get("selected_houses") or []
-        if not isinstance(picked, list):
-            return top_by_score[:4], None
-        # Sanitize: only houses that were actually in the candidate set
-        valid_houses = {c["house"] for c in candidates}
-        picked_valid = [int(h) for h in picked if isinstance(h, (int, str)) and int(h) in valid_houses]
-        if not picked_valid:
-            return top_by_score[:4], data.get("reasoning")
-        return picked_valid[:3], data.get("reasoning")
-    except Exception:
-        return top_by_score[:4], None
+
+        # Sanitize numeric house IDs + enforce non-overlap between fav/unfav.
+        fav = [int(h) for h in (data.get("favourable_houses") or []) if 1 <= int(h) <= 12][:3]
+        unfav = [int(h) for h in (data.get("unfavourable_houses") or []) if 1 <= int(h) <= 12][:3]
+        # Drop any unfavourable that's also in favourable (favourable wins)
+        unfav = [h for h in unfav if h not in fav]
+        added = [int(h) for h in (data.get("llm_added_houses") or []) if 1 <= int(h) <= 12][:2]
+
+        # Track which favourable houses came from where (for trace transparency)
+        candidate_set = {c["house"] for c in candidates}
+        opposition_set = set(opposition.keys())
+
+        return {
+            "user_intent":         data.get("user_intent") or "predict",
+            "intent_summary":      data.get("intent_summary") or "",
+            "negation_detected":   bool(data.get("negation_detected", False)),
+            "favourable_houses":   fav,
+            "unfavourable_houses": unfav,
+            "llm_added_houses":    added,
+            "candidate_set":       sorted(candidate_set),
+            "opposition_set":      sorted(opposition_set),
+            "reasoning":           data.get("reasoning") or "",
+        }
+    except Exception as e:
+        # Don't crash on Gemini hiccup; caller will gracefully fall back.
+        print(f"[interpret] _llm_classify_houses failed: {e}", file=__import__("sys").stderr)
+        return None
 
 
 def _domain_map_fallback(question: str) -> dict:
@@ -326,39 +479,119 @@ def _domain_map_fallback(question: str) -> dict:
 
 
 def decide_houses(question: str) -> dict:
-    """Pick the houses relevant to a question via the dictionary → LLM pipeline,
-    with a graceful fallback to the old domain classifier.
+    """Pick the houses relevant to a question via the dictionary → LLM polarity
+    classifier pipeline, with a graceful fallback to the old domain classifier.
 
-    See module-level comment for the output shape.
+    Output shape (new fields marked ★ for the polarity-aware revision):
+      {
+        "selected_houses":       [int, …],   # legacy alias = favourable_houses
+        "favourable_houses":     [int, …],   ★ houses whose strength helps user's outcome
+        "unfavourable_houses":   [int, …],   ★ houses whose strength obstructs it
+        "llm_added_houses":      [int, …],   ★ houses LLM added outside candidates
+        "natural_karakas":       [str, …],
+        "label":                 str,
+        "source":                "dictionary" | "dictionary+llm" | "domain_map_fallback(*)",
+        "mapping":               <trace dict>,
+        "llm_reasoning":         str | None,
+        "user_intent":           str | None, ★ "achieve" | "avoid" | "predict" | "decide" | "timing" | "quality"
+        "intent_summary":        str | None, ★ one-sentence plain-English description
+        "negation_detected":     bool | None,★ explicit flip-the-polarity phrase present
+        "domain":                str,        # legacy hint for HOUSE_MEANING_FOR_DOMAIN
+      }
     """
     trace = house_mapper.map_question(question)
     candidates = trace["candidates"]
 
     if not candidates:
-        return _domain_map_fallback(question)
+        # Zero matches — fall back to the old 14-domain classifier. We don't
+        # run the polarity classifier here because the fallback already
+        # produces a fixed houses list; nothing to classify.
+        fb = _domain_map_fallback(question)
+        # Decorate with empty polarity fields so downstream code doesn't NPE.
+        fb.update({
+            "favourable_houses":   list(fb["selected_houses"]),
+            "unfavourable_houses": [],
+            "llm_added_houses":    [],
+            "user_intent":         None,
+            "intent_summary":      None,
+            "negation_detected":   None,
+        })
+        return fb
 
     if len(candidates) == 1:
-        houses = [candidates[0]["house"]]
+        # Single candidate → no LLM call needed for picking, but we still
+        # benefit from polarity classification (e.g. "Should I avoid X?"
+        # with a single dictionary hit on X still needs a polarity flip).
+        # So we DO run the classifier here — its output may flip the lane.
+        classification = _llm_classify_houses(question, trace)
+        if classification:
+            return _build_intent(trace, classification, source="dictionary+llm")
+        # Classifier unavailable → accept candidate as favourable, no opposition.
+        h = candidates[0]["house"]
         return {
-            "selected_houses":  houses,
-            "natural_karakas":  house_mapper.natural_karakas_for_houses(houses),
-            "label":            house_mapper.label_for_houses(houses),
-            "source":           "dictionary",
-            "mapping":          trace,
-            "llm_reasoning":    None,
-            "domain":           "general",
+            "selected_houses":     [h],
+            "favourable_houses":   [h],
+            "unfavourable_houses": [],
+            "llm_added_houses":    [],
+            "natural_karakas":     house_mapper.natural_karakas_for_houses([h]),
+            "label":               house_mapper.label_for_houses([h]),
+            "source":              "dictionary",
+            "mapping":             trace,
+            "llm_reasoning":       None,
+            "user_intent":         None,
+            "intent_summary":      None,
+            "negation_detected":   None,
+            "domain":              "general",
         }
 
-    # 2+ candidates → LLM picks
-    picked, reasoning = _llm_pick_houses(question, trace)
+    # 2+ candidates → LLM classifies polarity
+    classification = _llm_classify_houses(question, trace)
+    if classification:
+        return _build_intent(trace, classification, source="dictionary+llm")
+
+    # LLM unavailable / errored → top-N-by-score fallback, all marked favourable.
+    top_by_score = [c["house"] for c in candidates[:3]]
     return {
-        "selected_houses":  picked,
-        "natural_karakas":  house_mapper.natural_karakas_for_houses(picked),
-        "label":            house_mapper.label_for_houses(picked),
-        "source":           "dictionary+llm" if reasoning else "dictionary+top_score",
-        "mapping":          trace,
-        "llm_reasoning":    reasoning,
-        "domain":           "general",
+        "selected_houses":     top_by_score,
+        "favourable_houses":   top_by_score,
+        "unfavourable_houses": [],
+        "llm_added_houses":    [],
+        "natural_karakas":     house_mapper.natural_karakas_for_houses(top_by_score),
+        "label":               house_mapper.label_for_houses(top_by_score),
+        "source":              "dictionary+top_score",
+        "mapping":             trace,
+        "llm_reasoning":       None,
+        "user_intent":         None,
+        "intent_summary":      None,
+        "negation_detected":   None,
+        "domain":              "general",
+    }
+
+
+def _build_intent(trace: dict, classification: dict, source: str) -> dict:
+    """Assemble the intent dict from a successful polarity classification.
+    `selected_houses` is kept as an alias for `favourable_houses` so all
+    existing downstream code (gather_evidence, synthesize) keeps working
+    even when it doesn't yet read the polarity-aware fields."""
+    fav = classification["favourable_houses"]
+    unfav = classification["unfavourable_houses"]
+    # Karakas derive from the favourable side only — those are the houses we
+    # WANT to be strong, so their natural significators matter.
+    karakas = house_mapper.natural_karakas_for_houses(fav)
+    return {
+        "selected_houses":     fav,
+        "favourable_houses":   fav,
+        "unfavourable_houses": unfav,
+        "llm_added_houses":    classification["llm_added_houses"],
+        "natural_karakas":     karakas,
+        "label":               house_mapper.label_for_houses(fav),
+        "source":              source,
+        "mapping":             trace,
+        "llm_reasoning":       classification["reasoning"],
+        "user_intent":         classification["user_intent"],
+        "intent_summary":      classification["intent_summary"],
+        "negation_detected":   classification["negation_detected"],
+        "domain":              "general",
     }
 
 
@@ -407,40 +640,72 @@ def _score_planet(p: dict) -> tuple[float, list[str]]:
     return score, notes
 
 
+# Dampening factor applied to all unfavourable-lane contributions.
+# Classical Parashari treats the primary house lord as the central signal;
+# opposition factors are qualifying weather, not equal-weight inputs. We
+# dampen by 0.7 so a strong opposition lord can shade the verdict without
+# fully cancelling a strong primary lord. See Durga meeting decision log.
+UNFAVOURABLE_DAMPENING = 0.7
+
+
 def gather_evidence(
     chart: dict,
-    houses: list[int],
+    favourable_houses: list[int],
+    unfavourable_houses: list[int] | None,
     natural_karakas: list[str],
     domain_key: str = "general",
 ) -> dict:
-    """Build a structured list of evidence facts from the chart.
+    """Build a polarity-aware evidence list from the chart.
+
+    Two lanes:
+      • Favourable lane — strong = good for user's preferred outcome.
+        Contributions positive when factors are strong, negative when weak.
+      • Unfavourable lane — strong = bad for user's preferred outcome.
+        Contributions are SIGN-FLIPPED and DAMPENED (×0.7) so a strong
+        opposition lord subtracts from the total without fully cancelling
+        a strong primary lord.
+
+    Per-item evidence entries are tagged with `lane: "favourable" | "unfavourable" | "context"`
+    so the trace UI can render the two columns side by side.
 
     Args:
-        chart:            the full chart dict (from prashna.compute_chart)
-        houses:           houses selected for this question (primary first)
-        natural_karakas:  planets to treat as natural significators
-        domain_key:       legacy hint used only by HOUSE_MEANING_FOR_DOMAIN
-                          for richer per-house phrasing. "general" → use
-                          generic English meanings. Stays in place for the
-                          synthesize() prompt; not used in scoring math.
+        chart:                the full chart dict from prashna.compute_chart
+        favourable_houses:    houses whose strength helps the user (primary first)
+        unfavourable_houses:  houses whose strength obstructs the user (can be empty)
+        natural_karakas:      planets to treat as natural significators (favourable-side only)
+        domain_key:           legacy hint for HOUSE_MEANING_FOR_DOMAIN phrasing
+
+    Returns:
+      {
+        ..., "favourable_score", "unfavourable_score", "total_score",
+        "favourable_houses", "unfavourable_houses",
+        "primary_houses": <legacy alias for favourable_houses>,
+        "evidence": [{factor, subject, detail, score, weight, lane}, …]
+      }
     """
-    # Guard: callers should always pass at least one house, but be safe.
-    if not houses:
-        houses = [1]
+    if not favourable_houses:
+        favourable_houses = [1]
+    if unfavourable_houses is None:
+        unfavourable_houses = []
     if not natural_karakas:
         natural_karakas = ["Sun", "Moon"]
 
     evidence: list[dict] = []
-    total_score = 0.0
+    fav_score = 0.0
+    unfav_score = 0.0
 
-    # ---- Primary house and its lord -------------------------------------
-    primary_house_num = houses[0]
+    # ------------------------------------------------------------------
+    # Favourable lane — house lord + supporting + karakas
+    # ------------------------------------------------------------------
+    # Primary favourable house and its lord ----
+    primary_house_num = favourable_houses[0]
     primary_house = _house(chart, primary_house_num)
     lord = _planet(chart, primary_house["lord"])
     s, notes = _score_planet(lord)
-    total_score += s * 1.5  # weight house lord heavily
+    delta = s * 1.5
+    fav_score += delta
     evidence.append({
-        "factor": f"House {primary_house_num} — primary house for this question",
+        "factor": f"House {primary_house_num} — primary (favourable)",
         "subject": f"{primary_house['sign']} ({primary_house['sign_sanskrit']}), ruled by {primary_house['lord']}",
         "detail": (
             f"The {primary_house_num}th house sign is {primary_house['sign']}. "
@@ -448,39 +713,47 @@ def gather_evidence(
             f"sitting in the {lord['house']}th house. "
             f"Condition: {', '.join(notes) if notes else 'neutral'}."
         ),
-        "score": round(s * 1.5, 2),
+        "score": round(delta, 2),
         "weight": "primary",
+        "lane": "favourable",
     })
     if primary_house["occupants"]:
         evidence.append({
             "factor": f"Planets sitting in House {primary_house_num}",
             "subject": ", ".join(primary_house["occupants"]),
-            "detail": f"{', '.join(primary_house['occupants'])} currently occupy the {primary_house_num}th house — they actively shape this domain.",
+            "detail": (
+                f"{', '.join(primary_house['occupants'])} currently occupy the "
+                f"{primary_house_num}th house — they actively shape this domain."
+            ),
             "score": 0.0,
             "weight": "context",
+            "lane": "context",
         })
 
-    # ---- Supporting houses (lighter weight) -----------------------------
-    for hn in houses[1:]:
+    # Supporting favourable houses ----
+    for hn in favourable_houses[1:]:
         h = _house(chart, hn)
         l = _planet(chart, h["lord"])
         s2, notes2 = _score_planet(l)
-        total_score += s2 * 0.5
+        delta = s2 * 0.5
+        fav_score += delta
         evidence.append({
-            "factor": f"House {hn} — supporting",
+            "factor": f"House {hn} — supporting (favourable)",
             "subject": f"{h['sign']}, ruled by {h['lord']}",
             "detail": f"Lord {h['lord']} in {l['sign']} — {', '.join(notes2) if notes2 else 'neutral'}.",
-            "score": round(s2 * 0.5, 2),
+            "score": round(delta, 2),
             "weight": "supporting",
+            "lane": "favourable",
         })
 
-    # ---- Natural karakas -------------------------------------------------
+    # Natural karakas (favourable lane) ----
     for nk in natural_karakas:
         p = _planet(chart, nk)
         if not p:
             continue
         s3, notes3 = _score_planet(p)
-        total_score += s3
+        delta = s3
+        fav_score += delta
         evidence.append({
             "factor": f"Natural karaka: {nk}",
             "subject": f"{nk} in {p['sign']}, {p['house']}th house",
@@ -490,25 +763,58 @@ def gather_evidence(
                 f"{p['house']}th house, avastha: {p['avastha']}. "
                 f"Condition: {', '.join(notes3) if notes3 else 'neutral'}."
             ),
-            "score": round(s3, 2),
+            "score": round(delta, 2),
             "weight": "primary",
+            "lane": "favourable",
         })
 
-    # NOTE: The old "Chara Karaka (Jaimini)" evidence block was removed per
-    # the May 12 Durga MOM action item: "Remove all Jaimini-based logic
-    # (Chara Karakas) — the system is built on Parashari astrology."
-    # The chart still carries chara_karakas (for backward-compatible API
-    # output) but they no longer participate in scoring or the reading.
+    # ------------------------------------------------------------------
+    # Unfavourable lane — opposition house lords (sign-flipped, dampened)
+    # ------------------------------------------------------------------
+    # Strong opposition lord → strong obstacle → SUBTRACT from total.
+    # Weak opposition lord → feeble obstacle → ADD to total.
+    # Hence: delta = -score × weight × dampening
+    for idx, hn in enumerate(unfavourable_houses):
+        h = _house(chart, hn)
+        l = _planet(chart, h["lord"])
+        s_u, notes_u = _score_planet(l)
+        weight_label = "primary-negative" if idx == 0 else "supporting-negative"
+        weight_mag = 1.5 if idx == 0 else 0.5
+        delta = -s_u * weight_mag * UNFAVOURABLE_DAMPENING
+        unfav_score += delta
+        # Interpretation hint for the UI/narrative
+        if s_u > 0:
+            verdict_hint = "obstacle is strong — argues against the user's preferred outcome"
+        elif s_u < 0:
+            verdict_hint = "obstacle is feeble — favours the user's outcome"
+        else:
+            verdict_hint = "obstacle is neutral"
+        evidence.append({
+            "factor": f"House {hn} — {('primary' if idx == 0 else 'supporting')} (unfavourable)",
+            "subject": f"{h['sign']}, ruled by {h['lord']}",
+            "detail": (
+                f"Opposition house: H{hn} ({h['sign']}). Lord {h['lord']} is in "
+                f"{l['sign']} ({l['nakshatra']} pada {l['pada']}), {l['house']}th house. "
+                f"Condition: {', '.join(notes_u) if notes_u else 'neutral'}. "
+                f"{verdict_hint.capitalize()} (dampened ×{UNFAVOURABLE_DAMPENING})."
+            ),
+            "score": round(delta, 2),
+            "weight": weight_label,
+            "lane": "unfavourable",
+        })
 
-    # ---- DBA: Mahadasha → Antardasha → Pratyantar ------------------------
-    # Three nested timing layers. MD sets the multi-year backdrop;
-    # AD is the active sub-period coloring it; PD is the immediate trigger.
-    # Each layer is scored, with weight decreasing as scope narrows but bonus
-    # increasing if that lord directly touches a core house for this question.
+    # ------------------------------------------------------------------
+    # DBA layers — route each lord to a lane based on its house placement
+    # ------------------------------------------------------------------
+    # Rule: a DBA lord sitting in an UNFAVOURABLE house amplifies that
+    # obstacle's activation right now; it goes in the unfavourable lane
+    # (sign-flipped + dampened). A lord in a FAVOURABLE house activates
+    # the helpful domain; it goes in the favourable lane with the
+    # standard core-house bonus. A lord in a NEUTRAL house contributes
+    # a general timing signal to the favourable lane (no bonus).
     dasha = chart.get("dasha", {})
 
     dba_layers = [
-        # (label, lord_name, scope_weight, core_bonus, remaining_text, role_text)
         ("MD", dasha.get("current_mahadasha"), 0.6, 0.5,
          f"{dasha.get('remaining_years', '?')} years remaining",
          "long-term theme — the multi-year backdrop for this question"),
@@ -527,10 +833,29 @@ def gather_evidence(
         if not lord:
             continue
         s_layer, notes_layer = _score_planet(lord)
-        in_primary = lord["house"] in houses
-        layer_score = s_layer * weight + (core_bonus if in_primary else 0.0)
-        total_score += layer_score
-        relevance = "directly activates this domain" if in_primary else "colors the background context"
+        lord_house = lord["house"]
+        in_fav = lord_house in favourable_houses
+        in_unfav = lord_house in unfavourable_houses
+
+        if in_unfav:
+            delta = -s_layer * weight * UNFAVOURABLE_DAMPENING
+            unfav_score += delta
+            relevance = f"sits in unfavourable H{lord_house} — timing amplifies the obstacle"
+            lane = "unfavourable"
+            ev_weight = "primary-negative" if label == "MD" else "supporting-negative"
+        elif in_fav:
+            delta = s_layer * weight + core_bonus
+            fav_score += delta
+            relevance = f"sits in favourable H{lord_house} — directly activates the domain"
+            lane = "favourable"
+            ev_weight = "primary" if label == "MD" else "supporting"
+        else:
+            delta = s_layer * weight
+            fav_score += delta
+            relevance = f"sits in H{lord_house} — colors the background context"
+            lane = "favourable"
+            ev_weight = "primary" if label == "MD" else "supporting"
+
         evidence.append({
             "factor": f"{label} — {lord_name} ({role.split(' — ')[0]})",
             "subject": f"{lord_name} {label} · {remaining}",
@@ -539,11 +864,12 @@ def gather_evidence(
                 f"{lord_name} sits in {lord['sign']}, {lord['house']}th house — {relevance}. "
                 f"Condition: {', '.join(notes_layer) if notes_layer else 'neutral'}."
             ),
-            "score": round(layer_score, 2),
-            "weight": "primary" if label == "MD" else "supporting",
+            "score": round(delta, 2),
+            "weight": ev_weight,
+            "lane": lane,
         })
 
-    # ---- Timing window: when the next PD lord shifts ---------------------
+    # ---- Timing window (context only, no scoring) ------------------------
     pd_timeline = dasha.get("pratyantar_timeline") or []
     current_pd_idx = next((i for i, t in enumerate(pd_timeline) if t.get("current")), None)
     if current_pd_idx is not None and current_pd_idx + 1 < len(pd_timeline):
@@ -558,12 +884,15 @@ def gather_evidence(
             ),
             "score": 0.0,
             "weight": "context",
+            "lane": "context",
         })
 
-    # ---- Lagna lord — sincerity of the question -------------------------
+    # ---- Lagna lord (favourable lane, context weight) --------------------
     lagna_lord_name = chart["lagna"]["lord"]
     lagna_lord = _planet(chart, lagna_lord_name)
     s6, _notes6 = _score_planet(lagna_lord)
+    delta = s6 * 0.3
+    fav_score += delta
     evidence.append({
         "factor": "Lagna lord — strength of the question itself",
         "subject": f"{lagna_lord_name} (Lagna lord)",
@@ -572,18 +901,24 @@ def gather_evidence(
             f"It is {chart['lagna']['lord_state']} in {chart['lagna']['lord_sign']}. "
             f"{'A strong Lagna lord lends weight to the chart' if s6 > 0 else 'A weak Lagna lord softens the chart' if s6 < 0 else 'Lagna lord is steady'}."
         ),
-        "score": round(s6 * 0.3, 2),
+        "score": round(delta, 2),
         "weight": "context",
+        "lane": "favourable",
     })
-    total_score += s6 * 0.3
+
+    total_score = fav_score + unfav_score
 
     return {
-        "domain":           domain_key,
-        "label":            house_mapper.label_for_houses(houses),
-        "primary_houses":   houses,
-        "natural_karakas":  natural_karakas,
-        "evidence":         evidence,
-        "total_score":      round(total_score, 2),
+        "domain":              domain_key,
+        "label":               house_mapper.label_for_houses(favourable_houses),
+        "favourable_houses":   favourable_houses,
+        "unfavourable_houses": unfavourable_houses,
+        "primary_houses":      favourable_houses,   # legacy alias for back-compat
+        "natural_karakas":     natural_karakas,
+        "evidence":            evidence,
+        "favourable_score":    round(fav_score, 2),
+        "unfavourable_score":  round(unfav_score, 2),
+        "total_score":         round(total_score, 2),
     }
 
 
@@ -665,7 +1000,8 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
     # English meanings, which is the right default when we don't have a 14-domain
     # match anymore.
     domain_key = intent.get("domain", "general")
-    core_houses = intent.get("selected_houses") or evidence.get("primary_houses") or [1]
+    core_houses = intent.get("favourable_houses") or intent.get("selected_houses") or evidence.get("primary_houses") or [1]
+    unfavourable_houses = intent.get("unfavourable_houses") or evidence.get("unfavourable_houses") or []
     natural_karakas = intent.get("natural_karakas") or evidence.get("natural_karakas") or []
 
     # ---- DBA stack with per-layer house_meaning (the chart-specific hint) ----
@@ -733,11 +1069,38 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
             "date": pd_timeline[cur_pd_idx + 1]["starts"],
         }
 
+    # ---- Polarity context (new in the polarity-aware revision) ----
+    # If the LLM classifier surfaced an explicit user intent + a list of
+    # houses that OPPOSE the desired outcome, we pass that through so the
+    # narrative can name the tension instead of glossing over it.
+    user_intent = intent.get("user_intent")
+    intent_summary = intent.get("intent_summary")
+    negation_detected = intent.get("negation_detected")
+    fav_score = evidence.get("favourable_score")
+    unfav_score = evidence.get("unfavourable_score")
+    unfav_meanings = {h: _house_meaning(domain_key, h) for h in unfavourable_houses}
+
+    # Tension flag: both lanes carry significant signal in opposing directions.
+    # Threshold tuned empirically — when unfav magnitude is >40% of fav magnitude
+    # AND fav is positive, the chart has real "yes, BUT" character.
+    has_tension = (
+        fav_score is not None
+        and unfav_score is not None
+        and abs(unfav_score) > 0.4 * abs(fav_score)
+        and fav_score > 0
+        and unfav_score < 0
+    )
+
     facts = {
         "question": question,
         "domain": intent["label"],
-        "primary_houses": core_houses,
-        "primary_house_meanings": {h: _house_meaning(domain_key, h) for h in core_houses},
+        "user_intent": user_intent,
+        "intent_summary": intent_summary,
+        "negation_detected": negation_detected,
+        "favourable_houses": core_houses,
+        "favourable_house_meanings": {h: _house_meaning(domain_key, h) for h in core_houses},
+        "unfavourable_houses": unfavourable_houses,
+        "unfavourable_house_meanings": unfav_meanings,
         "natural_karakas": natural_karakas,
         "lagna": chart["lagna"],
         "primary_house_lord": primary_house_lord,
@@ -746,6 +1109,12 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
         "top_negative": [_slim(e) for e in top_negative],
         "caveats": caveats,
         "verdict": verdict,
+        "scores": {
+            "favourable": fav_score,
+            "unfavourable": unfav_score,
+            "total": evidence.get("total_score"),
+        },
+        "has_tension": has_tension,
         "next_pd_shift": next_pd_shift,
     }
 
@@ -757,6 +1126,20 @@ Prefer phrasings like "the chart suggests", "right now", "this period favors".
 
 The user asked: "{question}"
 
+# IMPORTANT — UNDERSTAND THE POLARITY
+We have already classified what the user wants (`intent_summary`) and which
+houses are FAVOURABLE (their strength helps the user's preferred outcome)
+versus UNFAVOURABLE (their strength obstructs it). Read these two arrays
+carefully — they are the FRAME for everything that follows.
+
+- If `negation_detected` is true OR `user_intent` is "avoid", the user is
+  hoping AGAINST something. A strong favourable house lord means "yes, the
+  thing you hope for is supported." A strong unfavourable house lord means
+  the obstacle is real and active.
+- If `has_tension` is true, the chart has genuine "yes, but" character —
+  the favourable side is positive but the unfavourable side is also active.
+  The reading MUST name this tension explicitly in the verdict section.
+
 Below are the structured facts from the chart cast at the moment of their question.
 Use ONLY these facts. Do not invent placements, planets, or aspects.
 
@@ -767,25 +1150,26 @@ Write the reading as MARKDOWN with exactly these 6 sections, in order,
 each starting with a level-2 header (##). Use the exact headers below:
 
 ## 🎯 The theme
-2–3 sentences. Name the primary houses governing this question in plain English
-(use `primary_house_meanings` to phrase them naturally). Name the natural karakas
-and what they mean here (e.g. "Saturn — hard work").
+2–3 sentences. Start by naming what the user wants in plain English (cite
+`intent_summary`). Name the favourable houses in plain English (use
+`favourable_house_meanings`). If `unfavourable_houses` is non-empty, name them
+too as the houses to watch for obstacles. Name the natural karakas.
 
 ## ✨ The moment
 2–3 sentences. Name the Lagna and where the Lagna lord sits.
 Say what that implies about how sincere/serious the question is.
 
 ## 🏛️ The houses governing your question
-2–4 sentences. Walk through the primary house lord's current condition —
-where it sits (use `lord_sits_in_house_meaning`), what state it's in, why
-that helps or hurts. If a top_positive or top_negative comes from a supporting
-house, mention it briefly.
+2–4 sentences. Walk through the primary FAVOURABLE house lord's current
+condition (use `lord_sits_in_house_meaning`). Then, if `unfavourable_houses`
+is non-empty, briefly note whether the obstacle lord(s) look strong or weak —
+this is the "yes, but" texture.
 
 ## ⏳ Who's on duty — the three timing lords
 3–5 sentences. For EACH of the three DBA lords (MD, AD, PD):
   1. Name the lord AND the house it sits in.
-  2. Use the lord's `house_meaning` (already chart-specific) to say what that
-     house represents for THIS question.
+  2. Use the lord's `house_meaning` to say what that house represents
+     for THIS question.
   3. Add the lord's state (own/exalted/combust/etc.) as a MODIFIER, not the
      main point.
 Then connect the three — how do the long-term, mid-term, and immediate
@@ -796,10 +1180,15 @@ carefully"). Describe their PLACEMENTS for THIS question. A reading that
 would apply to any question has failed this section.
 
 ## ⚖️ The verdict
-2–3 sentences. State the verdict label in the first sentence ("the chart leans
-favorable" / "the chart is mixed" / etc). Then name the TOP positive contributor
-AND exactly ONE caveat from the `caveats` list. If `caveats` is empty, omit the
-caveat sentence.
+2–4 sentences. State the verdict label in the first sentence ("the chart leans
+favorable" / "the chart is mixed" / etc). Then:
+  - Name the TOP positive contributor from `top_positive`.
+  - If `has_tension` is true, OR `top_negative` has an item with magnitude
+    ≥ 1.0, explicitly name what the OBSTACLE FACTOR is showing. Use phrasing
+    like "but watch for…" or "with the caveat that…". Do NOT bury this.
+  - If `caveats` is non-empty, mention exactly ONE caveat from that list.
+  - If both sides are weak (low magnitudes), say the chart is muted and the
+    timing window matters more than the static picture.
 
 ## 🪔 The timing window
 1–2 sentences. State the days remaining in the current pratyantar (from `dba.pd`).
@@ -835,19 +1224,22 @@ Return ONLY the markdown. No surrounding text, no JSON wrapper, no code fence.
 def answer(question: str, chart: dict) -> dict:
     """The public /ask entry point.
 
-    Pipeline (May 19 Durga MOM #4 architecture):
-      1. decide_houses(question)  — dictionary → narrowed candidates → LLM picks
-      2. gather_evidence(chart, houses, karakas)  — deterministic scoring
-      3. make_verdict(score)                       — fixed thresholds
-      4. synthesize(...)                           — Gemini writes the reading
+    Pipeline (polarity-aware revision):
+      1. decide_houses(question)  — dictionary → narrowed candidates →
+                                    Gemini classifies favourable + unfavourable
+      2. gather_evidence(chart, fav, unfav, karakas)  — dual-lane scoring
+      3. make_verdict(total_score)                    — fixed thresholds
+      4. synthesize(...)                              — Gemini writes the reading
+                                                        with explicit polarity hints
 
     The `intent` block carries both the human-readable label AND the full
-    mapping trace, ready to be persisted by the audit log (MOM #3).
+    mapping trace, ready to be persisted by the audit log.
     """
     intent = decide_houses(question)
     evidence = gather_evidence(
         chart,
-        houses=intent["selected_houses"],
+        favourable_houses=intent.get("favourable_houses") or intent["selected_houses"],
+        unfavourable_houses=intent.get("unfavourable_houses") or [],
         natural_karakas=intent["natural_karakas"],
         domain_key=intent.get("domain", "general"),
     )

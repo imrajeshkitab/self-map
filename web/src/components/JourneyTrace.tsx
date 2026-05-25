@@ -219,42 +219,59 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
 
       <Arrow />
 
-      {/* ④ Pick houses */}
-      <Stage n={4} title="Pick houses" type={pickStageType(intent.source)}>
+      {/* ④ Pick houses — polarity-aware: shows favourable vs unfavourable */}
+      <Stage n={4} title="Classify houses (polarity)" type={pickStageType(intent.source)}>
         <KV label="Path taken">
           <PathBadge source={intent.source} candidateCount={mapping?.candidates.length ?? 0} />
         </KV>
         <KV label="Logic">{pickStageLogic(intent.source)}</KV>
+
+        {/* Intent classification — what the LLM thought the user wanted */}
+        {intent.user_intent && (
+          <KV label="User intent">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-full bg-[rgba(139,92,246,0.15)] px-2 py-[1px] text-[0.65rem] uppercase tracking-widest text-[var(--accent-purple)]">
+                {intent.user_intent}
+              </span>
+              {intent.negation_detected && (
+                <span
+                  className="rounded-full bg-[rgba(248,113,113,0.15)] px-2 py-[1px] text-[0.65rem] uppercase tracking-widest text-[#f87171]"
+                  title="A polarity-flipping word ('avoid', 'not', 'lose', 'escape'…) was detected — the LLM flipped the lane assignments accordingly"
+                >
+                  negation
+                </span>
+              )}
+              {intent.intent_summary && (
+                <span className="text-[var(--text-muted)] italic">
+                  &ldquo;{intent.intent_summary}&rdquo;
+                </span>
+              )}
+            </div>
+          </KV>
+        )}
+
         {intent.llm_reasoning && (
           <KV label="LLM reasoning">
             <em className="text-[var(--text-main)]">&ldquo;{intent.llm_reasoning}&rdquo;</em>
           </KV>
         )}
+
+        {/* Two-column lane display — favourable left, unfavourable right */}
         <KV label="Output">
-          <div className="flex flex-col gap-1 text-xs">
-            <div>
-              <span className="text-[var(--text-muted)]">selected_houses:</span>{" "}
-              {intent.selected_houses.map((h, i) => (
-                <span key={h}>
-                  <strong className="text-[var(--accent-gold)]">H{h}</strong>
-                  {i === 0 && intent.selected_houses.length > 1 && (
-                    <span className="ml-1 text-[0.6rem] uppercase tracking-widest text-[var(--text-muted)]">
-                      primary
-                    </span>
-                  )}
-                  {i < intent.selected_houses.length - 1 && <span className="text-[var(--text-muted)]">, </span>}
-                </span>
-              ))}
-            </div>
-            <div>
-              <span className="text-[var(--text-muted)]">natural_karakas:</span>{" "}
-              <ChipRow tokens={intent.natural_karakas} variant="planet" />
-            </div>
-            <div>
-              <span className="text-[var(--text-muted)]">label:</span>{" "}
-              <span className="text-[var(--text-main)]">{intent.label}</span>
-            </div>
-          </div>
+          <PolarityColumns
+            favourable={intent.favourable_houses ?? intent.selected_houses}
+            unfavourable={intent.unfavourable_houses ?? []}
+            llmAdded={intent.llm_added_houses ?? []}
+          />
+        </KV>
+        <KV label="Karakas">
+          <ChipRow tokens={intent.natural_karakas} variant="planet" />
+          <span className="ml-2 text-[0.65rem] text-[var(--text-muted)]">
+            (derived from favourable houses only)
+          </span>
+        </KV>
+        <KV label="Label">
+          <span className="text-[var(--text-main)]">{intent.label}</span>
         </KV>
       </Stage>
 
@@ -296,28 +313,66 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
 
       <Arrow />
 
-      {/* ⑥ Evidence gathering */}
-      <Stage n={6} title="Evidence gathering" type="det">
+      {/* ⑥ Evidence gathering — dual lane (favourable + unfavourable) */}
+      <Stage n={6} title="Evidence gathering (dual lane)" type="det">
         <KV label="Input">
-          houses{" "}
-          {intent.selected_houses.map((h) => `H${h}`).join(", ")} · karakas{" "}
-          {intent.natural_karakas.join(", ")} + chart
+          <div className="flex flex-col gap-1 text-xs">
+            <div>
+              <span className="text-[#86efac]">favourable:</span>{" "}
+              {(intent.favourable_houses ?? intent.selected_houses).map((h) => `H${h}`).join(", ") || "(none)"}
+            </div>
+            {(intent.unfavourable_houses ?? []).length > 0 && (
+              <div>
+                <span className="text-[#f87171]">unfavourable:</span>{" "}
+                {(intent.unfavourable_houses ?? []).map((h) => `H${h}`).join(", ")}
+              </div>
+            )}
+            <div>
+              <span className="text-[var(--text-muted)]">karakas:</span>{" "}
+              {intent.natural_karakas.join(", ")}
+            </div>
+          </div>
         </KV>
         <KV label="Logic">
-          for each factor, score the planet&apos;s condition (exalted +2, own
-          +1, neutral 0, debilitated −2, combust −1, friend/enemy ±0.5) ·
-          weight by layer (primary lord ×1.5, supporting ×0.5, karakas ×1.0,
-          MD/AD/PD ×0.6/0.5/0.4, lagna lord ×0.3)
+          Two lanes, same scoring math, opposite sign on the unfavourable side.
+          <span className="block mt-1">
+            <strong className="text-[#86efac]">Favourable lane</strong>: factor strong → adds positively
+            (primary lord ×1.5, supporting ×0.5, karakas ×1.0, MD/AD/PD ×0.6/0.5/0.4).
+          </span>
+          <span className="block mt-1">
+            <strong className="text-[#f87171]">Unfavourable lane</strong>: factor strong → subtracts
+            (sign-flipped + dampened by <code>×0.7</code>, classical convention — opposition is qualifying
+            weather, not equal weight to the primary signal).
+          </span>
         </KV>
         <KV label="Output">
           <div className="flex flex-col gap-1 text-xs">
             <div>
               <span className="text-[var(--text-muted)]">factors:</span>{" "}
-              <strong className="text-[var(--text-main)]">{evidence.evidence.length}</strong>{" "}
-              · total_score{" "}
-              <strong className={cn("font-mono", verdictColor)}>
-                {evidence.total_score.toFixed(2)}
-              </strong>
+              <strong className="text-[var(--text-main)]">{evidence.evidence.length}</strong>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <span>
+                <span className="text-[var(--text-muted)]">favourable_score:</span>{" "}
+                <strong className="font-mono text-[#86efac]">
+                  {(evidence.favourable_score ?? 0).toFixed(2)}
+                </strong>
+              </span>
+              <span>
+                <span className="text-[var(--text-muted)]">unfavourable_score:</span>{" "}
+                <strong className={cn(
+                  "font-mono",
+                  (evidence.unfavourable_score ?? 0) < 0 ? "text-[#f87171]" : "text-[var(--text-muted)]",
+                )}>
+                  {(evidence.unfavourable_score ?? 0).toFixed(2)}
+                </strong>
+              </span>
+              <span>
+                <span className="text-[var(--text-muted)]">→ combined:</span>{" "}
+                <strong className={cn("font-mono", verdictColor)}>
+                  {evidence.total_score.toFixed(2)}
+                </strong>
+              </span>
             </div>
             {topPositive && (
               <div>
@@ -336,10 +391,12 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
           </div>
         </KV>
 
-        {/* Calculation breakdown — full factor-by-factor audit trail. */}
+        {/* Calculation breakdown — lane-segregated factor table. */}
         <FactorBreakdown
           items={evidence.evidence}
           totalScore={evidence.total_score}
+          favourableScore={evidence.favourable_score ?? null}
+          unfavourableScore={evidence.unfavourable_score ?? null}
         />
       </Stage>
 
@@ -513,6 +570,98 @@ function Arrow() {
   );
 }
 
+/**
+ * Two-column display for the polarity-aware lane classification.
+ * Favourable houses (strength helps user) on the left in green;
+ * unfavourable houses (strength obstructs user) on the right in red.
+ * LLM-added houses (outside the dictionary candidate set) are flagged.
+ */
+function PolarityColumns({
+  favourable,
+  unfavourable,
+  llmAdded,
+}: {
+  favourable: number[];
+  unfavourable: number[];
+  llmAdded: number[];
+}) {
+  const isAdded = (h: number) => llmAdded.includes(h);
+  return (
+    <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+      <PolarityColumn
+        title="Favourable (strength helps you)"
+        tone="favourable"
+        houses={favourable}
+        isAdded={isAdded}
+      />
+      <PolarityColumn
+        title="Unfavourable (strength obstructs you)"
+        tone="unfavourable"
+        houses={unfavourable}
+        isAdded={isAdded}
+      />
+    </div>
+  );
+}
+
+function PolarityColumn({
+  title,
+  tone,
+  houses,
+  isAdded,
+}: {
+  title: string;
+  tone: "favourable" | "unfavourable";
+  houses: number[];
+  isAdded: (h: number) => boolean;
+}) {
+  const colorClasses =
+    tone === "favourable"
+      ? "border-[rgba(134,239,172,0.30)] bg-[rgba(134,239,172,0.04)]"
+      : "border-[rgba(248,113,113,0.30)] bg-[rgba(248,113,113,0.04)]";
+  const labelColor =
+    tone === "favourable" ? "text-[#86efac]" : "text-[#f87171]";
+  return (
+    <div className={cn("rounded-md border p-2", colorClasses)}>
+      <div className={cn("text-[0.6rem] uppercase tracking-widest", labelColor)}>
+        {title}
+      </div>
+      {houses.length === 0 ? (
+        <div className="mt-1 text-[var(--text-muted)] italic">none</div>
+      ) : (
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {houses.map((h, i) => (
+            <span
+              key={h}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border px-2 py-[1px]",
+                tone === "favourable"
+                  ? "border-[rgba(134,239,172,0.4)] bg-[rgba(134,239,172,0.12)] text-[#86efac]"
+                  : "border-[rgba(248,113,113,0.4)] bg-[rgba(248,113,113,0.12)] text-[#f87171]",
+              )}
+            >
+              <strong>H{h}</strong>
+              {i === 0 && houses.length > 1 && tone === "favourable" && (
+                <span className="text-[0.55rem] uppercase tracking-widest opacity-70">
+                  primary
+                </span>
+              )}
+              {isAdded(h) && (
+                <span
+                  className="text-[0.55rem] uppercase tracking-widest opacity-80"
+                  title="LLM added this house — it was NOT in the dictionary candidate set"
+                >
+                  + llm-added
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PathBadge({ source, candidateCount }: { source: string; candidateCount: number }) {
   if (source.startsWith("domain_map_fallback")) {
     return (
@@ -671,16 +820,22 @@ function TokenMath({ match }: { match: TokenMatch }) {
 function FactorBreakdown({
   items,
   totalScore,
+  favourableScore,
+  unfavourableScore,
 }: {
   items: EvidenceItem[];
   totalScore: number;
+  favourableScore: number | null;
+  unfavourableScore: number | null;
 }) {
-  // Sort by descending absolute score so the highest-impact factors land
-  // at the top — that's usually what the user wants to inspect first.
-  const sorted = [...items].sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
-  // Floating-point reconciliation: show the rounded sum to make any small
-  // rounding visible rather than hiding it.
-  const sum = items.reduce((acc, e) => acc + (typeof e.score === "number" ? e.score : 0), 0);
+  // Lane-segregate. Older audit-log rows from before the polarity migration
+  // won't have `lane` — default to "favourable" so they still render.
+  const favItems = items.filter((e) => (e.lane ?? "favourable") === "favourable");
+  const unfavItems = items.filter((e) => e.lane === "unfavourable");
+  const contextItems = items.filter((e) => e.lane === "context");
+
+  const sortByImpact = (arr: EvidenceItem[]) =>
+    [...arr].sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
 
   return (
     <details className="mt-2 rounded-md border border-[var(--border-glass)] bg-[rgba(10,11,22,0.4)]">
@@ -692,50 +847,115 @@ function FactorBreakdown({
         </span>
       </summary>
       <div className="border-t border-[var(--border-glass)] px-3 py-2">
-        <table className="w-full text-[0.7rem] font-mono">
-          <thead>
-            <tr className="text-[var(--text-muted)]">
-              <th className="pb-1 text-left">Factor</th>
-              <th className="pb-1 text-left font-normal">Weight</th>
-              <th className="pb-1 text-right font-normal">Score</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((e, i) => (
-              <tr
-                key={i}
-                className="border-t border-white/[0.03]"
-              >
-                <td className="py-1 pr-2 text-[var(--text-main)]">{e.factor}</td>
-                <td className="py-1 pr-2 text-[0.65rem] uppercase tracking-widest text-[var(--text-muted)]">
-                  {e.weight}
-                </td>
-                <td
-                  className={cn(
-                    "py-1 text-right",
-                    e.score > 0 ? "text-[#86efac]" : e.score < 0 ? "text-[#f87171]" : "text-[var(--text-muted)]"
-                  )}
-                >
-                  {e.score > 0 ? "+" : ""}
-                  {Number(e.score).toFixed(2)}
-                </td>
-              </tr>
-            ))}
-            <tr className="border-t border-[var(--accent-gold)]/30 bg-white/[0.02]">
-              <td className="py-1.5 pr-2 text-[var(--accent-gold)]">Σ  total_score</td>
-              <td className="py-1.5 pr-2" />
-              <td className="py-1.5 text-right text-[var(--accent-gold)]">
-                <strong>{sum.toFixed(2)}</strong>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <FactorLaneTable
+          title="Favourable lane"
+          subtitle="strength of these factors helps your outcome"
+          tone="favourable"
+          items={sortByImpact(favItems)}
+          laneTotal={favourableScore}
+        />
+        {unfavItems.length > 0 && (
+          <FactorLaneTable
+            title="Unfavourable lane"
+            subtitle="strength of these factors opposes your outcome (sign-flipped + ×0.7 dampened)"
+            tone="unfavourable"
+            items={sortByImpact(unfavItems)}
+            laneTotal={unfavourableScore}
+          />
+        )}
+        {contextItems.length > 0 && (
+          <FactorLaneTable
+            title="Context (no scoring)"
+            subtitle="informational; doesn't affect the total"
+            tone="context"
+            items={contextItems}
+            laneTotal={null}
+          />
+        )}
+        {/* Combined total */}
+        <div className="mt-3 flex justify-between rounded-md border border-[var(--accent-gold)]/30 bg-white/[0.02] px-3 py-2 text-xs">
+          <span className="text-[var(--accent-gold)]">
+            Σ combined ({(favourableScore ?? 0).toFixed(2)} + ({(unfavourableScore ?? 0).toFixed(2)}))
+          </span>
+          <strong className="font-mono text-[var(--accent-gold)]">
+            {totalScore.toFixed(2)}
+          </strong>
+        </div>
         <p className="mt-2 text-[0.65rem] italic text-[var(--text-muted)]">
-          Factors sorted by absolute impact. The Verdict stage maps this sum
-          to the favorable / mixed / challenging label using fixed thresholds.
+          Factors sorted by absolute impact within each lane. The Verdict stage
+          maps the combined total to the favourable / mixed / challenging label
+          using fixed thresholds.
         </p>
       </div>
     </details>
+  );
+}
+
+/**
+ * One sub-table per lane (favourable / unfavourable / context). Same column
+ * layout in all three so the eye can scan; tone-coded so the side is obvious.
+ */
+function FactorLaneTable({
+  title,
+  subtitle,
+  tone,
+  items,
+  laneTotal,
+}: {
+  title: string;
+  subtitle: string;
+  tone: "favourable" | "unfavourable" | "context";
+  items: EvidenceItem[];
+  laneTotal: number | null;
+}) {
+  const accent =
+    tone === "favourable" ? "text-[#86efac]" :
+    tone === "unfavourable" ? "text-[#f87171]" :
+    "text-[var(--text-muted)]";
+  return (
+    <div className="mt-2 first:mt-0">
+      <div className="mb-1 flex items-baseline justify-between">
+        <div>
+          <span className={cn("text-[0.7rem] uppercase tracking-widest", accent)}>
+            {title}
+          </span>{" "}
+          <span className="text-[0.6rem] italic text-[var(--text-muted)]">{subtitle}</span>
+        </div>
+        {laneTotal !== null && (
+          <span className={cn("font-mono text-xs", accent)}>
+            Σ {laneTotal >= 0 ? "+" : ""}{laneTotal.toFixed(2)}
+          </span>
+        )}
+      </div>
+      <table className="w-full text-[0.7rem] font-mono">
+        <thead>
+          <tr className="text-[var(--text-muted)]">
+            <th className="pb-1 text-left">Factor</th>
+            <th className="pb-1 text-left font-normal">Weight</th>
+            <th className="pb-1 text-right font-normal">Score</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((e, i) => (
+            <tr key={i} className="border-t border-white/[0.03]">
+              <td className="py-1 pr-2 text-[var(--text-main)]">{e.factor}</td>
+              <td className="py-1 pr-2 text-[0.65rem] uppercase tracking-widest text-[var(--text-muted)]">
+                {e.weight}
+              </td>
+              <td
+                className={cn(
+                  "py-1 text-right",
+                  e.score > 0 ? "text-[#86efac]" : e.score < 0 ? "text-[#f87171]" : "text-[var(--text-muted)]",
+                )}
+              >
+                {e.score > 0 ? "+" : ""}
+                {Number(e.score).toFixed(2)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

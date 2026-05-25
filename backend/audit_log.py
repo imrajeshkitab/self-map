@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS ask_log (
 CREATE INDEX IF NOT EXISTS idx_ask_log_created  ON ask_log (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ask_log_source   ON ask_log (source);
 CREATE INDEX IF NOT EXISTS idx_ask_log_verdict  ON ask_log (verdict_label);
+
+-- Polarity-aware extension (added after the initial Neon migration).
+-- Uses ADD COLUMN IF NOT EXISTS so existing deployments upgrade in place
+-- without losing data.
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS favourable_houses    TEXT;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS unfavourable_houses  TEXT;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS llm_added_houses     TEXT;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS user_intent          TEXT;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS intent_summary       TEXT;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS negation_detected    BOOLEAN;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS favourable_score     DOUBLE PRECISION;
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS unfavourable_score   DOUBLE PRECISION;
 """
 
 
@@ -144,6 +156,12 @@ def log_ask(
 
         request_ms = int((time.time() - started_at) * 1000)
 
+        # Polarity-aware extension fields (intent now carries fav/unfav arrays
+        # + user_intent classification + scores from the dual-lane evidence)
+        fav_houses   = intent.get("favourable_houses")   or intent.get("selected_houses") or []
+        unfav_houses = intent.get("unfavourable_houses") or []
+        added_houses = intent.get("llm_added_houses")    or []
+
         # Postgres accepts ISO 8601 directly; if it's already a datetime, fine too.
         with _connect() as conn:
             conn.execute(
@@ -153,13 +171,19 @@ def log_ask(
                     chart_datetime, source, selected_houses, natural_karakas,
                     intent_label, llm_reasoning, mapping_trace,
                     total_score, verdict_label, verdict_confidence,
-                    answer_source, answer_md, chart_summary, error
+                    answer_source, answer_md, chart_summary, error,
+                    favourable_houses, unfavourable_houses, llm_added_houses,
+                    user_intent, intent_summary, negation_detected,
+                    favourable_score, unfavourable_score
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s
                 )
                 """,
                 (
@@ -168,7 +192,7 @@ def log_ask(
                     lat, lon, place,
                     chart_datetime,
                     intent.get("source"),
-                    ",".join(str(h) for h in (intent.get("selected_houses") or [])),
+                    ",".join(str(h) for h in (intent.get("selected_houses") or fav_houses)),
                     ",".join(intent.get("natural_karakas") or []),
                     intent.get("label"),
                     intent.get("llm_reasoning"),
@@ -180,6 +204,15 @@ def log_ask(
                     (result or {}).get("answer"),
                     Json(chart_summary) if chart_summary else None,
                     error,
+                    # polarity-aware columns
+                    ",".join(str(h) for h in fav_houses),
+                    ",".join(str(h) for h in unfav_houses),
+                    ",".join(str(h) for h in added_houses),
+                    intent.get("user_intent"),
+                    intent.get("intent_summary"),
+                    intent.get("negation_detected"),
+                    evidence.get("favourable_score"),
+                    evidence.get("unfavourable_score"),
                 ),
             )
     except Exception as e:
@@ -218,7 +251,11 @@ def list_recent(
     cols = (
         "id, created_at, request_ms, question, source, selected_houses, "
         "natural_karakas, intent_label, total_score, verdict_label, "
-        "verdict_confidence, answer_source"
+        "verdict_confidence, answer_source, "
+        # Polarity-aware columns (added after the initial Neon migration).
+        "favourable_houses, unfavourable_houses, llm_added_houses, "
+        "user_intent, intent_summary, negation_detected, "
+        "favourable_score, unfavourable_score"
     )
     if include_trace:
         cols += (
