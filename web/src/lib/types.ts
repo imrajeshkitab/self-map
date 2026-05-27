@@ -92,12 +92,25 @@ export type Chart = {
   pulse?: { source: "gemini" | "template"; summary: string };
 };
 
+export type EvidenceWeight =
+  | "primary"
+  | "supporting"
+  | "context"
+  | "primary-negative"     // unfavourable-lane primary (sign-flipped, dampened)
+  | "supporting-negative"; // unfavourable-lane supporting
+
+export type EvidenceLane = "favourable" | "unfavourable" | "context";
+
 export type EvidenceItem = {
   factor: string;
   subject: string;
   detail: string;
   score: number;
-  weight: "primary" | "supporting" | "context";
+  weight: EvidenceWeight;
+  /** Which polarity lane this item contributes to (polarity-aware revision).
+   *  Older audit-log rows from before the migration won't have this — treat
+   *  as "favourable" by default. */
+  lane?: EvidenceLane;
 };
 
 export type Verdict = {
@@ -140,13 +153,36 @@ export type MappingTrace = {
   match_count: number;
 };
 
+export type UserIntent = "achieve" | "avoid" | "predict" | "decide" | "timing" | "quality";
+
+// Re-exported below for use by api.ts. Defined here so audit types can share it.
+
 export type Intent = {
   /** Human-readable composite label, e.g. "Children / Creativity / Play / Romance". */
   label: string;
-  /** Houses chosen for analysis. First entry is the primary house. */
+  /** Houses chosen for analysis. First entry is the primary house.
+   *  Equal to `favourable_houses` in the polarity-aware revision. */
   selected_houses: number[];
-  /** Natural significator planets for the selected houses. */
+  /** Houses whose strength supports the user's preferred outcome.
+   *  Polarity-aware revision — same as selected_houses, named for clarity. */
+  favourable_houses?: number[];
+  /** Houses whose strength OBSTRUCTS the user's preferred outcome.
+   *  Polarity-aware revision — may be empty for pure prediction questions. */
+  unfavourable_houses?: number[];
+  /** Houses the LLM added that weren't in the dictionary candidate set —
+   *  flagged for review in the audit trace. */
+  llm_added_houses?: number[];
+  /** Natural significator planets for the favourable houses. */
   natural_karakas: PlanetName[];
+  /** Natural significator planets for the unfavourable (obstacle) houses.
+   *  Scored on the unfavourable lane — strong = strong obstacle = subtracts. */
+  unfavourable_natural_karakas?: PlanetName[];
+  /** What the user actually wants (from polarity classifier). */
+  user_intent?: UserIntent | null;
+  /** One-sentence plain-English summary of what the user wants. */
+  intent_summary?: string | null;
+  /** Whether a polarity-flipping phrase ("avoid", "lose", "not", …) was detected. */
+  negation_detected?: boolean | null;
   /**
    * How the houses were chosen:
    *   - "dictionary"            — single candidate, no LLM needed
@@ -169,12 +205,24 @@ export type AskResponse = {
   evidence: {
     domain: string;
     label: string;
+    /** Legacy alias = favourable_houses. Kept for back-compat. */
     primary_houses: number[];
+    /** Polarity-aware revision: houses on the favourable lane (= primary_houses). */
+    favourable_houses?: number[];
+    /** Polarity-aware revision: houses on the unfavourable lane. */
+    unfavourable_houses?: number[];
     natural_karakas: PlanetName[];
+    /** Natural significator planets for the unfavourable houses (polarity-aware). */
+    unfavourable_natural_karakas?: PlanetName[];
     /** Removed in the dictionary-driven pipeline; kept optional for back-compat. */
     chara_karaka_role?: string;
     evidence: EvidenceItem[];
     total_score: number;
+    /** Sum of all favourable-lane contributions. Polarity-aware revision. */
+    favourable_score?: number;
+    /** Sum of all unfavourable-lane contributions (negative when opposition
+     *  is strong; positive when opposition is weak). Polarity-aware revision. */
+    unfavourable_score?: number;
   };
   verdict: Verdict;
   answer: string;          // markdown — render via `marked`

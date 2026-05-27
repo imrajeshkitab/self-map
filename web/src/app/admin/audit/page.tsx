@@ -16,6 +16,7 @@ import type {
   UnmatchedToken,
 } from "@/lib/api";
 import { AuditTable } from "@/components/AuditTable";
+import { LogoutButton } from "@/components/LogoutButton";
 
 export const dynamic = "force-dynamic";
 
@@ -61,7 +62,10 @@ export default async function AuditPage({
 
   return (
     <>
-      <header className="mb-6 text-center">
+      <header className="relative mb-6 text-center">
+        <div className="absolute right-0 top-0">
+          <LogoutButton />
+        </div>
         <h1 className="text-4xl text-[var(--accent-gold)]">Audit Log</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Every <code>/ask</code> request, its mapping trace, and the verdict

@@ -12,7 +12,7 @@ Endpoints:
     GET  /stats
 """
 
-from fastapi import FastAPI, Query, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Query, BackgroundTasks, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import os
@@ -193,10 +193,14 @@ def ask(
         chart["pulse"] = cosmic_pulse(chart)
         result = interpret_question(q.strip(), chart)
         result["chart"] = chart  # include the chart so the frontend can show it inline
+        # Always log the ACTUAL moment the chart was cast at — even when the
+        # caller didn't pass `when` (asked "now"). Otherwise a later replay
+        # would recompute the chart at replay-time, not the original instant.
+        cast_at = (dt_obj.isoformat() if dt_obj else chart.get("datetime_utc"))
         bg.add_task(
             audit_log.log_ask,
             q.strip(), lat, lon, place,
-            (dt_obj.isoformat() if dt_obj else None),
+            cast_at,
             result, started_at, None,
         )
         return result
@@ -318,6 +322,19 @@ def audit_entry(entry_id: int):
     if not entry:
         raise HTTPException(status_code=404, detail=f"audit entry {entry_id} not found")
     return entry
+
+
+@app.post("/audit/{entry_id}/cache")
+def audit_cache_replay(entry_id: int, response: dict = Body(...)):
+    """Back-fill the full response snapshot for an OLD row that has none, so
+    the next open is instant. Tagged response_source='replay' (a
+    reconstruction, not the original). Will NOT overwrite a genuine original
+    snapshot — see audit_log.cache_replay."""
+    entry = audit_log.get_by_id(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"audit entry {entry_id} not found")
+    cached = audit_log.cache_replay(entry_id, response)
+    return {"id": entry_id, "cached": cached}
 
 
 @app.get("/search")

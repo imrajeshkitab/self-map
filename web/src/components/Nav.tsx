@@ -5,6 +5,7 @@ const links = [
   { href: "/today",   label: "Today's Sky" },
   { href: "/ask",     label: "Ask the Moment" },
   { href: "/browse",  label: "Browse" },
+  { href: "/admin/audit", label: "Logs" },
 ];
 
 export function Nav() {
