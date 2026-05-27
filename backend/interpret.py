@@ -512,6 +512,7 @@ def decide_houses(question: str) -> dict:
             "favourable_houses":   list(fb["selected_houses"]),
             "unfavourable_houses": [],
             "llm_added_houses":    [],
+            "unfavourable_natural_karakas": [],
             "user_intent":         None,
             "intent_summary":      None,
             "negation_detected":   None,
@@ -534,6 +535,7 @@ def decide_houses(question: str) -> dict:
             "unfavourable_houses": [],
             "llm_added_houses":    [],
             "natural_karakas":     house_mapper.natural_karakas_for_houses([h]),
+            "unfavourable_natural_karakas": [],
             "label":               house_mapper.label_for_houses([h]),
             "source":              "dictionary",
             "mapping":             trace,
@@ -557,6 +559,7 @@ def decide_houses(question: str) -> dict:
         "unfavourable_houses": [],
         "llm_added_houses":    [],
         "natural_karakas":     house_mapper.natural_karakas_for_houses(top_by_score),
+        "unfavourable_natural_karakas": [],
         "label":               house_mapper.label_for_houses(top_by_score),
         "source":              "dictionary+top_score",
         "mapping":             trace,
@@ -571,19 +574,30 @@ def decide_houses(question: str) -> dict:
 def _build_intent(trace: dict, classification: dict, source: str) -> dict:
     """Assemble the intent dict from a successful polarity classification.
     `selected_houses` is kept as an alias for `favourable_houses` so all
-    existing downstream code (gather_evidence, synthesize) keeps working
-    even when it doesn't yet read the polarity-aware fields."""
+    existing downstream code keeps working without reading the polarity
+    fields it doesn't yet understand.
+
+    Natural karakas are computed for BOTH lanes: the favourable karakas
+    (planets that, when strong, help the user) and the unfavourable karakas
+    (planets that, when strong, reinforce the obstacle and therefore
+    obstruct the user's preferred outcome). The unfavourable karakas are
+    scored in the unfavourable lane by gather_evidence.
+    """
     fav = classification["favourable_houses"]
     unfav = classification["unfavourable_houses"]
-    # Karakas derive from the favourable side only — those are the houses we
-    # WANT to be strong, so their natural significators matter.
-    karakas = house_mapper.natural_karakas_for_houses(fav)
+    fav_karakas = house_mapper.natural_karakas_for_houses(fav)
+    # Karakas of unfavourable houses, with any planet that's ALSO a favourable
+    # karaka removed — when a planet plays both roles, the favourable lane
+    # claims it (avoids double-counting in opposite directions).
+    raw_unfav_karakas = house_mapper.natural_karakas_for_houses(unfav)
+    unfav_karakas = [k for k in raw_unfav_karakas if k not in fav_karakas]
     return {
         "selected_houses":     fav,
         "favourable_houses":   fav,
         "unfavourable_houses": unfav,
         "llm_added_houses":    classification["llm_added_houses"],
-        "natural_karakas":     karakas,
+        "natural_karakas":     fav_karakas,
+        "unfavourable_natural_karakas": unfav_karakas,
         "label":               house_mapper.label_for_houses(fav),
         "source":              source,
         "mapping":             trace,
@@ -653,6 +667,7 @@ def gather_evidence(
     favourable_houses: list[int],
     unfavourable_houses: list[int] | None,
     natural_karakas: list[str],
+    unfavourable_natural_karakas: list[str] | None = None,
     domain_key: str = "general",
 ) -> dict:
     """Build a polarity-aware evidence list from the chart.
@@ -669,11 +684,15 @@ def gather_evidence(
     so the trace UI can render the two columns side by side.
 
     Args:
-        chart:                the full chart dict from prashna.compute_chart
-        favourable_houses:    houses whose strength helps the user (primary first)
-        unfavourable_houses:  houses whose strength obstructs the user (can be empty)
-        natural_karakas:      planets to treat as natural significators (favourable-side only)
-        domain_key:           legacy hint for HOUSE_MEANING_FOR_DOMAIN phrasing
+        chart:                          the full chart dict from prashna.compute_chart
+        favourable_houses:              houses whose strength helps the user (primary first)
+        unfavourable_houses:            houses whose strength obstructs the user (can be empty)
+        natural_karakas:                planets to treat as natural significators on the FAVOURABLE side
+        unfavourable_natural_karakas:   planets that are natural significators of the UNFAVOURABLE
+                                        houses — scored in the unfavourable lane (sign-flipped,
+                                        dampened). E.g. for "avoid marriage" with H7 unfavourable,
+                                        Venus + Mercury go here. Defaults to empty list.
+        domain_key:                     legacy hint for HOUSE_MEANING_FOR_DOMAIN phrasing
 
     Returns:
       {
@@ -689,6 +708,8 @@ def gather_evidence(
         unfavourable_houses = []
     if not natural_karakas:
         natural_karakas = ["Sun", "Moon"]
+    if unfavourable_natural_karakas is None:
+        unfavourable_natural_karakas = []
 
     evidence: list[dict] = []
     fav_score = 0.0
@@ -766,6 +787,41 @@ def gather_evidence(
             "score": round(delta, 2),
             "weight": "primary",
             "lane": "favourable",
+        })
+
+    # Natural karakas (unfavourable lane) ----
+    # Strong karaka of an obstacle → strong obstacle → SUBTRACT.
+    # Weak karaka of an obstacle → feeble obstacle → ADD.
+    # Skip any planet already scored as a favourable karaka (avoid double-counting).
+    _seen_fav_karakas = set(natural_karakas)
+    for nk in unfavourable_natural_karakas:
+        if nk in _seen_fav_karakas:
+            continue
+        p = _planet(chart, nk)
+        if not p:
+            continue
+        s_uk, notes_uk = _score_planet(p)
+        delta = -s_uk * 1.0 * UNFAVOURABLE_DAMPENING
+        unfav_score += delta
+        if s_uk > 0:
+            verdict_hint = "obstacle's significator is strong — argues against the user's outcome"
+        elif s_uk < 0:
+            verdict_hint = "obstacle's significator is feeble — favours the user's outcome"
+        else:
+            verdict_hint = "obstacle's significator is neutral"
+        evidence.append({
+            "factor": f"Natural karaka: {nk} (unfavourable)",
+            "subject": f"{nk} in {p['sign']}, {p['house']}th house",
+            "detail": (
+                f"{nk} is the natural significator of the OBSTACLE domain. "
+                f"It sits in {p['sign']} ({p['nakshatra']} pada {p['pada']}), "
+                f"{p['house']}th house, avastha: {p['avastha']}. "
+                f"Condition: {', '.join(notes_uk) if notes_uk else 'neutral'}. "
+                f"{verdict_hint.capitalize()} (dampened ×{UNFAVOURABLE_DAMPENING})."
+            ),
+            "score": round(delta, 2),
+            "weight": "primary-negative",
+            "lane": "unfavourable",
         })
 
     # ------------------------------------------------------------------
@@ -915,6 +971,7 @@ def gather_evidence(
         "unfavourable_houses": unfavourable_houses,
         "primary_houses":      favourable_houses,   # legacy alias for back-compat
         "natural_karakas":     natural_karakas,
+        "unfavourable_natural_karakas": unfavourable_natural_karakas,
         "evidence":            evidence,
         "favourable_score":    round(fav_score, 2),
         "unfavourable_score":  round(unfav_score, 2),
@@ -1003,6 +1060,7 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
     core_houses = intent.get("favourable_houses") or intent.get("selected_houses") or evidence.get("primary_houses") or [1]
     unfavourable_houses = intent.get("unfavourable_houses") or evidence.get("unfavourable_houses") or []
     natural_karakas = intent.get("natural_karakas") or evidence.get("natural_karakas") or []
+    unfavourable_natural_karakas = intent.get("unfavourable_natural_karakas") or []
 
     # ---- DBA stack with per-layer house_meaning (the chart-specific hint) ----
     d = chart.get("dasha", {}) or {}
@@ -1102,6 +1160,7 @@ def synthesize(question: str, chart: dict, intent: dict, evidence: dict, verdict
         "unfavourable_houses": unfavourable_houses,
         "unfavourable_house_meanings": unfav_meanings,
         "natural_karakas": natural_karakas,
+        "unfavourable_natural_karakas": unfavourable_natural_karakas,
         "lagna": chart["lagna"],
         "primary_house_lord": primary_house_lord,
         "dba": dba_stack,
@@ -1241,6 +1300,7 @@ def answer(question: str, chart: dict) -> dict:
         favourable_houses=intent.get("favourable_houses") or intent["selected_houses"],
         unfavourable_houses=intent.get("unfavourable_houses") or [],
         natural_karakas=intent["natural_karakas"],
+        unfavourable_natural_karakas=intent.get("unfavourable_natural_karakas", []),
         domain_key=intent.get("domain", "general"),
     )
     verdict = make_verdict(evidence["total_score"])

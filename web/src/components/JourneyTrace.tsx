@@ -22,6 +22,7 @@
  *   ⑧ Synthesis       — Gemini writes the markdown reading
  */
 
+import { useMemo } from "react";
 import type { AskResponse, EvidenceItem, TokenMatch } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,13 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
   const intent = data.intent;
   const chart = data.chart;
   const evidence = data.evidence;
+  // House → lord planet map, threaded into the polarity columns so each
+  // house chip can show its ruler inline (H7 (Mars)).
+  const houseLords = useMemo<Record<number, string>>(() => {
+    const m: Record<number, string> = {};
+    for (const h of chart.houses) m[h.number] = h.lord;
+    return m;
+  }, [chart.houses]);
   const verdict = data.verdict;
 
   // --- derive small displays ----------------------------------------------
@@ -262,14 +270,27 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
             favourable={intent.favourable_houses ?? intent.selected_houses}
             unfavourable={intent.unfavourable_houses ?? []}
             llmAdded={intent.llm_added_houses ?? []}
+            houseLords={houseLords}
           />
         </KV>
-        <KV label="Karakas">
+        <KV label="Karakas (favourable)">
           <ChipRow tokens={intent.natural_karakas} variant="planet" />
           <span className="ml-2 text-[0.65rem] text-[var(--text-muted)]">
-            (derived from favourable houses only)
+            natural significators of the favourable houses
           </span>
         </KV>
+        {(intent.unfavourable_natural_karakas?.length ?? 0) > 0 && (
+          <KV label="Karakas (unfavourable)">
+            <ChipRow
+              tokens={intent.unfavourable_natural_karakas ?? []}
+              variant="planet"
+            />
+            <span className="ml-2 text-[0.65rem] text-[var(--text-muted)]">
+              natural significators of the obstacle houses — scored on the
+              unfavourable lane (sign-flipped, dampened)
+            </span>
+          </KV>
+        )}
         <KV label="Label">
           <span className="text-[var(--text-main)]">{intent.label}</span>
         </KV>
@@ -328,9 +349,15 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
               </div>
             )}
             <div>
-              <span className="text-[var(--text-muted)]">karakas:</span>{" "}
-              {intent.natural_karakas.join(", ")}
+              <span className="text-[#86efac]">karakas (fav):</span>{" "}
+              {intent.natural_karakas.join(", ") || "(none)"}
             </div>
+            {(intent.unfavourable_natural_karakas?.length ?? 0) > 0 && (
+              <div>
+                <span className="text-[#f87171]">karakas (unfav):</span>{" "}
+                {(intent.unfavourable_natural_karakas ?? []).join(", ")}
+              </div>
+            )}
           </div>
         </KV>
         <KV label="Logic">
@@ -580,10 +607,12 @@ function PolarityColumns({
   favourable,
   unfavourable,
   llmAdded,
+  houseLords,
 }: {
   favourable: number[];
   unfavourable: number[];
   llmAdded: number[];
+  houseLords: Record<number, string>;
 }) {
   const isAdded = (h: number) => llmAdded.includes(h);
   return (
@@ -593,12 +622,14 @@ function PolarityColumns({
         tone="favourable"
         houses={favourable}
         isAdded={isAdded}
+        houseLords={houseLords}
       />
       <PolarityColumn
         title="Unfavourable (strength obstructs you)"
         tone="unfavourable"
         houses={unfavourable}
         isAdded={isAdded}
+        houseLords={houseLords}
       />
     </div>
   );
@@ -609,11 +640,13 @@ function PolarityColumn({
   tone,
   houses,
   isAdded,
+  houseLords,
 }: {
   title: string;
   tone: "favourable" | "unfavourable";
   houses: number[];
   isAdded: (h: number) => boolean;
+  houseLords: Record<number, string>;
 }) {
   const colorClasses =
     tone === "favourable"
@@ -641,7 +674,12 @@ function PolarityColumn({
               )}
             >
               <strong>H{h}</strong>
-              {i === 0 && houses.length > 1 && tone === "favourable" && (
+              {houseLords[h] && (
+                <span className="text-[0.6rem] opacity-80">
+                  ({houseLords[h]})
+                </span>
+              )}
+              {i === 0 && houses.length > 1 && (
                 <span className="text-[0.55rem] uppercase tracking-widest opacity-70">
                   primary
                 </span>

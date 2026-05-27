@@ -155,6 +155,8 @@ export type MappingTrace = {
 
 export type UserIntent = "achieve" | "avoid" | "predict" | "decide" | "timing" | "quality";
 
+// Re-exported below for use by api.ts. Defined here so audit types can share it.
+
 export type Intent = {
   /** Human-readable composite label, e.g. "Children / Creativity / Play / Romance". */
   label: string;
@@ -172,6 +174,9 @@ export type Intent = {
   llm_added_houses?: number[];
   /** Natural significator planets for the favourable houses. */
   natural_karakas: PlanetName[];
+  /** Natural significator planets for the unfavourable (obstacle) houses.
+   *  Scored on the unfavourable lane — strong = strong obstacle = subtracts. */
+  unfavourable_natural_karakas?: PlanetName[];
   /** What the user actually wants (from polarity classifier). */
   user_intent?: UserIntent | null;
   /** One-sentence plain-English summary of what the user wants. */
@@ -207,6 +212,8 @@ export type AskResponse = {
     /** Polarity-aware revision: houses on the unfavourable lane. */
     unfavourable_houses?: number[];
     natural_karakas: PlanetName[];
+    /** Natural significator planets for the unfavourable houses (polarity-aware). */
+    unfavourable_natural_karakas?: PlanetName[];
     /** Removed in the dictionary-driven pipeline; kept optional for back-compat. */
     chara_karaka_role?: string;
     evidence: EvidenceItem[];

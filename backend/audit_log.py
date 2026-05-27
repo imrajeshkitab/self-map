@@ -83,6 +83,19 @@ ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS intent_summary       TEXT;
 ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS negation_detected    BOOLEAN;
 ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS favourable_score     DOUBLE PRECISION;
 ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS unfavourable_score   DOUBLE PRECISION;
+
+-- Full response snapshot (added so the audit detail page can render the
+-- EXACT AskResponse the user saw — chart, evidence, verdict, answer — with
+-- zero replay/regeneration. This is the source of truth for faithfulness;
+-- the slim columns above remain for cheap filtering/aggregation queries.
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS response_json        JSONB;
+
+-- Provenance of response_json:
+--   'original' — captured live at /ask time (100% faithful).
+--   'replay'   — back-filled later by re-running the pipeline (a
+--                reconstruction; may differ from what the user saw).
+--   NULL       — pre-migration original snapshot (treated as 'original').
+ALTER TABLE ask_log ADD COLUMN IF NOT EXISTS response_source      TEXT;
 """
 
 
@@ -174,7 +187,8 @@ def log_ask(
                     answer_source, answer_md, chart_summary, error,
                     favourable_houses, unfavourable_houses, llm_added_houses,
                     user_intent, intent_summary, negation_detected,
-                    favourable_score, unfavourable_score
+                    favourable_score, unfavourable_score,
+                    response_json, response_source
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
@@ -183,6 +197,7 @@ def log_ask(
                     %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
+                    %s, %s,
                     %s, %s
                 )
                 """,
@@ -213,6 +228,9 @@ def log_ask(
                     intent.get("negation_detected"),
                     evidence.get("favourable_score"),
                     evidence.get("unfavourable_score"),
+                    # Full faithful snapshot of exactly what the user saw.
+                    Json(result) if result else None,
+                    "original" if result else None,
                 ),
             )
     except Exception as e:
@@ -289,6 +307,34 @@ def get_by_id(entry_id: int) -> dict | None:
     except Exception as e:
         print(f"[audit_log] get_by_id failed: {e}", file=sys.stderr)
         return None
+
+
+def cache_replay(entry_id: int, response: dict) -> bool:
+    """Back-fill response_json for a row that has none, tagging it as a
+    'replay' reconstruction (NOT an original). Idempotent and safe:
+
+      - Only writes when response_json IS NULL, so we can NEVER overwrite a
+        genuine original snapshot with a reconstruction.
+      - Returns True if a row was updated, False otherwise.
+    """
+    if not DSN or not response:
+        return False
+    try:
+        with _connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE ask_log
+                   SET response_json   = %s,
+                       response_source = 'replay'
+                 WHERE id = %s
+                   AND response_json IS NULL
+                """,
+                (Json(response), entry_id),
+            )
+            return (cur.rowcount or 0) > 0
+    except Exception as e:
+        print(f"[audit_log] cache_replay failed: {e}", file=sys.stderr)
+        return False
 
 
 def summary(since: Optional[str] = None) -> dict:

@@ -133,6 +133,15 @@ export type AuditEntry = {
   verdict_label: string | null;
   verdict_confidence: string | null;
   answer_source: "gemini" | "template" | null;
+  // Polarity-aware columns (post-Neon migration). Older rows are null.
+  favourable_houses?: string | null;     // comma-separated
+  unfavourable_houses?: string | null;   // comma-separated
+  llm_added_houses?: string | null;      // comma-separated
+  user_intent?: string | null;           // achieve | avoid | predict | …
+  intent_summary?: string | null;
+  negation_detected?: boolean | null;
+  favourable_score?: number | null;
+  unfavourable_score?: number | null;
 };
 
 export type AuditSummary = {
@@ -182,6 +191,52 @@ export async function auditSummary(since?: string): Promise<AuditSummary> {
   if (since) url.searchParams.set("since", since);
   const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) throw new Error(`/audit/summary failed: ${res.status}`);
+  return res.json();
+}
+
+// Full detail for one entry — includes the JSONB mapping_trace and
+// chart_summary so the detail page can show everything we logged.
+export type AuditEntryDetail = AuditEntry & {
+  lat: number | null;
+  lon: number | null;
+  place: string | null;
+  chart_datetime: string | null;
+  llm_reasoning: string | null;
+  mapping_trace: unknown | null;  // JSONB — shape mirrors MappingTrace
+  chart_summary: unknown | null;  // JSONB — slim chart snapshot
+  answer_md: string | null;
+  error: string | null;
+  user_feedback?: string | null;
+  /** Full faithful snapshot of exactly what the user saw (chart + intent +
+   *  evidence + verdict + answer). Present for rows logged after the
+   *  response_json migration; null for older rows (fall back to replay). */
+  response_json?: AskResponse | null;
+  /** Provenance of response_json:
+   *   "original" — captured live at /ask time (100% faithful).
+   *   "replay"   — back-filled later from a reconstruction (may differ).
+   *   null       — pre-migration original snapshot (treat as "original"). */
+  response_source?: "original" | "replay" | null;
+};
+
+/** Back-fill an old row's snapshot from a replay, so repeat-opens are fast.
+ *  Tagged 'replay' server-side; never overwrites a genuine original. */
+export async function cacheAuditReplay(
+  id: number | string,
+  response: AskResponse,
+): Promise<{ id: number; cached: boolean }> {
+  const res = await fetch(`${API_BASE}/audit/${id}/cache`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(response),
+  });
+  if (!res.ok) throw new Error(`/audit/${id}/cache failed: ${res.status}`);
+  return res.json();
+}
+
+export async function auditEntry(id: number | string): Promise<AuditEntryDetail> {
+  const res = await fetch(`${API_BASE}/audit/${id}`, { cache: "no-store" });
+  if (res.status === 404) throw new Error(`audit entry ${id} not found`);
+  if (!res.ok) throw new Error(`/audit/${id} failed: ${res.status}`);
   return res.json();
 }
 
