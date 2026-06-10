@@ -23,7 +23,13 @@
  */
 
 import { useMemo } from "react";
-import type { AskResponse, EvidenceItem, TokenMatch } from "@/lib/types";
+import type {
+  AskResponse,
+  EvidenceItem,
+  NegationMap,
+  NegatorRow,
+  TokenMatch,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type StageType = "det" | "llm";
@@ -264,12 +270,27 @@ export function JourneyTrace({ data }: { data: AskResponse }) {
           </KV>
         )}
 
-        {/* Two-column lane display — favourable left, unfavourable right */}
-        <KV label="Output">
+        {/* Two-column lane display — favourable left, unfavourable right.
+            Quick at-a-glance summary above the per-favourable cards below. */}
+        <KV label="Lanes">
           <PolarityColumns
             favourable={intent.favourable_houses ?? intent.selected_houses}
             unfavourable={intent.unfavourable_houses ?? []}
             llmAdded={intent.llm_added_houses ?? []}
+            houseLords={houseLords}
+          />
+        </KV>
+
+        {/* Per-favourable negation cards (May 28 Durga MOM #5).
+            For every favourable house, show its 3 classical-dusthana
+            negators (6/8/12 from it) and the lord of each, so the user can
+            see WHY a particular house was flagged as obstacle. */}
+        <KV label="Negators per favourable">
+          <FavourableNegatorCards
+            favourable={intent.favourable_houses ?? intent.selected_houses}
+            negationMap={
+              intent.negation_map ?? intent.mapping?.negation_map ?? null
+            }
             houseLords={houseLords}
           />
         </KV>
@@ -695,6 +716,117 @@ function PolarityColumn({
             </span>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Per-favourable negation cards — for each favourable house, show the 3
+ * classical-dusthana negators (6/8/12 from it) with each negator's ruling
+ * planet. Lets the user see WHICH obstacles came from WHICH favourable.
+ *
+ * Falls back gracefully on older audit-log rows that lack negation_map by
+ * showing a small "computed at scoring time" note instead.
+ */
+function FavourableNegatorCards({
+  favourable,
+  negationMap,
+  houseLords,
+}: {
+  favourable: number[];
+  negationMap: NegationMap | null;
+  houseLords: Record<number, string>;
+}) {
+  if (!favourable.length) {
+    return (
+      <span className="text-xs italic text-[var(--text-muted)]">
+        no favourable houses
+      </span>
+    );
+  }
+  const byFav = negationMap?.by_favourable ?? {};
+  const llmAdded = negationMap?.llm_added ?? [];
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[0.65rem] text-[var(--text-muted)]">
+        For every favourable house, we look at the 6th, 8th, and 12th house
+        counted from it (the classical <em>dusthana</em>) and treat them as
+        obstacles. A strong lord there obstructs the matter; a weak one
+        means the obstacle is feeble.
+      </p>
+      {favourable.map((fav, idx) => (
+        <FavourableCard
+          key={fav}
+          favHouse={fav}
+          lord={houseLords[fav]}
+          isPrimary={idx === 0}
+          negators={byFav[String(fav)] ?? []}
+          houseLords={houseLords}
+        />
+      ))}
+      {llmAdded.length > 0 && (
+        <div className="mt-1 rounded-md border border-dashed border-[var(--border-glass)] p-2 text-[0.7rem] text-[var(--text-muted)]">
+          <span className="font-medium text-[var(--text-main)]">
+            Additional context (LLM-added):
+          </span>{" "}
+          {llmAdded
+            .map((h) => `H${h}${houseLords[h] ? ` (${houseLords[h]})` : ""}`)
+            .join(", ")}
+          <span className="ml-1 opacity-80">
+            — added by the polarity classifier from the question wording, not
+            derivable from the formula.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FavourableCard({
+  favHouse,
+  lord,
+  isPrimary,
+  negators,
+  houseLords,
+}: {
+  favHouse: number;
+  lord: string | undefined;
+  isPrimary: boolean;
+  negators: NegatorRow[];
+  houseLords: Record<number, string>;
+}) {
+  return (
+    <div className="rounded-md border border-[rgba(134,239,172,0.25)] bg-[rgba(134,239,172,0.04)] p-2 text-xs">
+      <div className="flex items-baseline gap-2">
+        <span className="font-semibold text-[#86efac]">H{favHouse}</span>
+        {lord && (
+          <span className="text-[var(--text-muted)]">({lord})</span>
+        )}
+        <span className="text-[0.55rem] uppercase tracking-widest text-[var(--text-muted)]">
+          {isPrimary ? "primary favourable" : "supporting favourable"}
+        </span>
+      </div>
+      {negators.length === 0 ? (
+        <p className="mt-1 italic text-[var(--text-muted)]">
+          no negators derivable (would all be favourable too)
+        </p>
+      ) : (
+        <ul className="mt-1 space-y-0.5 pl-3">
+          {negators.map((n) => (
+            <li key={n.house} className="text-[var(--text-main)]">
+              <span className="text-[#f87171]">{n.relation}</span>
+              <span className="mx-1 text-[var(--text-muted)]">→</span>
+              <strong>H{n.house}</strong>
+              {houseLords[n.house] && (
+                <span className="ml-1 text-[var(--text-muted)]">
+                  ({houseLords[n.house]})
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

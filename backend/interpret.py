@@ -271,6 +271,14 @@ def classify_question(question: str) -> dict:
 #      tripped during our model selection probe.
 
 
+def _nth_from(house: int, n: int) -> int:
+    """Nth house from `house`, 1-indexed, wrapping in the 12-cycle.
+       _nth_from(7, 6) == 12  (the 6th house from H7 is H12)
+       _nth_from(11, 8) == 6  (the 8th house from H11 is H6)
+    """
+    return ((house - 1 + n - 1) % 12) + 1
+
+
 def _structural_opposition(primary_house: int) -> dict[int, str]:
     """For any primary house, return the classical dusthana relationships:
        6th-from-primary  → obstacles / disputes about the matter
@@ -278,11 +286,84 @@ def _structural_opposition(primary_house: int) -> dict[int, str]:
        12th-from-primary → loss / dissolution of the matter
     Returns {house_num: relationship_label}. House numbers wrap 1..12.
     """
-    rotate = lambda p, offset: ((p - 1 + offset - 1) % 12) + 1
     return {
-        rotate(primary_house, 6):  f"6th-from-H{primary_house} (obstacles/disputes)",
-        rotate(primary_house, 8):  f"8th-from-H{primary_house} (sudden disruption)",
-        rotate(primary_house, 12): f"12th-from-H{primary_house} (loss/dissolution)",
+        _nth_from(primary_house, 6):  f"6th-from-H{primary_house} (obstacles/disputes)",
+        _nth_from(primary_house, 8):  f"8th-from-H{primary_house} (sudden disruption)",
+        _nth_from(primary_house, 12): f"12th-from-H{primary_house} (loss/dissolution)",
+    }
+
+
+# Per-favourable negators (Durga MOM May 28).
+# For EVERY favourable house — not just the primary — derive the 3 dusthana
+# negators (6th, 8th, 12th from it). Each is scored individually and the
+# penalty is attributed back to the parent favourable so the UI can show a
+# per-house "this is what dragged H7 down" breakdown.
+NEGATOR_OFFSETS: tuple[tuple[int, str], ...] = (
+    (6,  "6th-from"),   # obstacles / disputes
+    (8,  "8th-from"),   # sudden disruption
+    (12, "12th-from"),  # loss / dissolution
+)
+
+
+def _negators_for(fav_house: int) -> dict[int, str]:
+    """Classical dusthana from ONE favourable house. Returns a stable
+    {negator_house: relationship_label} map. Wrapping in the 12-cycle means
+    two different offsets from the same favourable house can collide on the
+    same negator (rare — only if the house numbers happen to align); we
+    keep the LAST label written, which is acceptable for display."""
+    return {_nth_from(fav_house, n): f"{label}-H{fav_house}" for n, label in NEGATOR_OFFSETS}
+
+
+def _build_negation_map(
+    favourable_houses: list[int],
+    llm_picks: list[int],
+) -> dict:
+    """Compose the full negation picture.
+
+    Returns:
+      {
+        "by_favourable": {
+            <fav_house>: [{"house": int, "relation": str}, ...],
+            ...
+        },
+        "llm_added": [<int>, ...],   # houses the LLM brought in that
+                                     # AREN'T derivable from the formula
+        "all_unfavourable": [<int>, ...],  # union, with favourables removed,
+                                           # deduped, deterministically sorted
+      }
+
+    Rules:
+      - A house that is itself favourable is NEVER an unfavourable (no
+        self-negation).
+      - Formula negators are deterministic; LLM picks supplement.
+      - all_unfavourable is what gather_evidence will iterate.
+    """
+    fav_set = set(favourable_houses)
+
+    by_fav: dict[int, list[dict]] = {}
+    formula_negators: set[int] = set()
+    for f in favourable_houses:
+        rows: list[dict] = []
+        for negator, relation in _negators_for(f).items():
+            if negator in fav_set:
+                continue
+            rows.append({"house": negator, "relation": relation})
+            formula_negators.add(negator)
+        by_fav[f] = rows
+
+    # LLM picks: only the ones not already produced by the formula and not
+    # themselves favourable. These get scored once with no parent favourable.
+    llm_added = sorted(
+        h for h in set(llm_picks)
+        if h not in formula_negators and h not in fav_set
+    )
+
+    all_unfav = sorted(formula_negators | set(llm_added))
+
+    return {
+        "by_favourable":    {str(k): v for k, v in by_fav.items()},  # JSON-friendly keys
+        "llm_added":        llm_added,
+        "all_unfavourable": all_unfav,
     }
 
 
@@ -517,7 +598,8 @@ def decide_houses(question: str) -> dict:
             "intent_summary":      None,
             "negation_detected":   None,
         })
-        return fb
+        # Formula negation still applies in the no-dictionary-match fallback.
+        return _apply_formula_negation(fb)
 
     if len(candidates) == 1:
         # Single candidate → no LLM call needed for picking, but we still
@@ -529,7 +611,7 @@ def decide_houses(question: str) -> dict:
             return _build_intent(trace, classification, source="dictionary+llm")
         # Classifier unavailable → accept candidate as favourable, no opposition.
         h = candidates[0]["house"]
-        return {
+        intent = {
             "selected_houses":     [h],
             "favourable_houses":   [h],
             "unfavourable_houses": [],
@@ -545,6 +627,7 @@ def decide_houses(question: str) -> dict:
             "negation_detected":   None,
             "domain":              "general",
         }
+        return _apply_formula_negation(intent, trace)
 
     # 2+ candidates → LLM classifies polarity
     classification = _llm_classify_houses(question, trace)
@@ -553,7 +636,7 @@ def decide_houses(question: str) -> dict:
 
     # LLM unavailable / errored → top-N-by-score fallback, all marked favourable.
     top_by_score = [c["house"] for c in candidates[:3]]
-    return {
+    intent = {
         "selected_houses":     top_by_score,
         "favourable_houses":   top_by_score,
         "unfavourable_houses": [],
@@ -569,6 +652,28 @@ def decide_houses(question: str) -> dict:
         "negation_detected":   None,
         "domain":              "general",
     }
+    return _apply_formula_negation(intent, trace)
+
+
+def _apply_formula_negation(intent: dict, trace: dict | None = None) -> dict:
+    """Mutate `intent` in place to add formula-derived negation when the
+    polarity classifier didn't run (fallback paths). Computes the negation
+    map from `favourable_houses` with no LLM picks, updates
+    `unfavourable_houses` + `unfavourable_natural_karakas`, and stores the
+    map on both the intent and (if provided) the trace."""
+    fav = intent.get("favourable_houses") or intent.get("selected_houses") or []
+    negation_map = _build_negation_map(fav, [])
+    merged_unfav = negation_map["all_unfavourable"]
+    intent["negation_map"] = negation_map
+    intent["unfavourable_houses"] = merged_unfav
+    fav_karakas = intent.get("natural_karakas") or []
+    raw_unfav_karakas = house_mapper.natural_karakas_for_houses(merged_unfav)
+    intent["unfavourable_natural_karakas"] = [
+        k for k in raw_unfav_karakas if k not in fav_karakas
+    ]
+    if trace is not None:
+        trace["negation_map"] = negation_map
+    return intent
 
 
 def _build_intent(trace: dict, classification: dict, source: str) -> dict:
@@ -584,18 +689,30 @@ def _build_intent(trace: dict, classification: dict, source: str) -> dict:
     scored in the unfavourable lane by gather_evidence.
     """
     fav = classification["favourable_houses"]
-    unfav = classification["unfavourable_houses"]
+    llm_unfav = classification["unfavourable_houses"]
+
+    # Auto-derive formula negators (6/8/12 from each favourable) and merge
+    # with the LLM polarity classifier's picks. The merged list becomes the
+    # authoritative unfavourable_houses; the structured map lives in the
+    # trace for the UI to render per-favourable breakdowns.
+    negation_map = _build_negation_map(fav, llm_unfav)
+    merged_unfav = negation_map["all_unfavourable"]
+    # Persist the map into the mapping trace so the audit log + frontend
+    # journey trace can both read it back.
+    trace["negation_map"] = negation_map
+
     fav_karakas = house_mapper.natural_karakas_for_houses(fav)
     # Karakas of unfavourable houses, with any planet that's ALSO a favourable
     # karaka removed — when a planet plays both roles, the favourable lane
     # claims it (avoids double-counting in opposite directions).
-    raw_unfav_karakas = house_mapper.natural_karakas_for_houses(unfav)
+    raw_unfav_karakas = house_mapper.natural_karakas_for_houses(merged_unfav)
     unfav_karakas = [k for k in raw_unfav_karakas if k not in fav_karakas]
     return {
         "selected_houses":     fav,
         "favourable_houses":   fav,
-        "unfavourable_houses": unfav,
+        "unfavourable_houses": merged_unfav,
         "llm_added_houses":    classification["llm_added_houses"],
+        "negation_map":        negation_map,
         "natural_karakas":     fav_karakas,
         "unfavourable_natural_karakas": unfav_karakas,
         "label":               house_mapper.label_for_houses(fav),
@@ -669,6 +786,7 @@ def gather_evidence(
     natural_karakas: list[str],
     unfavourable_natural_karakas: list[str] | None = None,
     domain_key: str = "general",
+    negation_map: dict | None = None,
 ) -> dict:
     """Build a polarity-aware evidence list from the chart.
 
@@ -710,6 +828,25 @@ def gather_evidence(
         natural_karakas = ["Sun", "Moon"]
     if unfavourable_natural_karakas is None:
         unfavourable_natural_karakas = []
+
+    # Reverse-index the negation_map: which favourable parent produced each
+    # unfavourable house, with the relationship label (e.g. "6th-from-H7").
+    # Falls back to a synthesized map if none was passed in — preserves
+    # behaviour for older callers (no breaking change).
+    if negation_map is None:
+        negation_map = _build_negation_map(favourable_houses, unfavourable_houses)
+    unfav_parent: dict[int, tuple[int, str]] = {}
+    for fav_str, rows in (negation_map.get("by_favourable") or {}).items():
+        try:
+            fav_int = int(fav_str)
+        except (TypeError, ValueError):
+            continue
+        for row in rows:
+            h = row.get("house")
+            rel = row.get("relation", "")
+            # First parent wins if a negator is derivable from multiple favs —
+            # keeps the per-house bucket attribution deterministic.
+            unfav_parent.setdefault(h, (fav_int, rel))
 
     evidence: list[dict] = []
     fav_score = 0.0
@@ -830,33 +967,74 @@ def gather_evidence(
     # Strong opposition lord → strong obstacle → SUBTRACT from total.
     # Weak opposition lord → feeble obstacle → ADD to total.
     # Hence: delta = -score × weight × dampening
+    # Per-favourable formula negators get a uniform supporting weight (0.5)
+    # — there isn't a single "primary" negator; every favourable has its own
+    # triplet, and tagging one as 1.5 would bias toward whichever favourable
+    # happened to sort first. LLM-added picks (no parent) keep the original
+    # primary/supporting heuristic for back-compat with single-house cases.
+    llm_added = set(negation_map.get("llm_added") or [])
+
     for idx, hn in enumerate(unfavourable_houses):
         h = _house(chart, hn)
         l = _planet(chart, h["lord"])
         s_u, notes_u = _score_planet(l)
-        weight_label = "primary-negative" if idx == 0 else "supporting-negative"
-        weight_mag = 1.5 if idx == 0 else 0.5
+        parent = unfav_parent.get(hn)  # (fav_house, relation_label) or None
+        is_formula = parent is not None
+        is_llm = hn in llm_added
+
+        # Source + weight: formula negators are evenly weighted; LLM-only
+        # picks keep the legacy primary-supporting taper.
+        if is_formula:
+            source_tag = "formula-6-8-12"
+            weight_label = "supporting-negative"
+            weight_mag = 0.5
+        else:
+            source_tag = "llm-pick"
+            weight_label = "primary-negative" if idx == 0 else "supporting-negative"
+            weight_mag = 1.5 if idx == 0 else 0.5
+
         delta = -s_u * weight_mag * UNFAVOURABLE_DAMPENING
         unfav_score += delta
-        # Interpretation hint for the UI/narrative
+
         if s_u > 0:
             verdict_hint = "obstacle is strong — argues against the user's preferred outcome"
         elif s_u < 0:
             verdict_hint = "obstacle is feeble — favours the user's outcome"
         else:
             verdict_hint = "obstacle is neutral"
+
+        if is_formula:
+            fav_parent, rel = parent
+            factor_label = f"Negation: {rel} → H{hn} ({h['lord']})"
+            origin_note = (
+                f"Derived from favourable H{fav_parent} via the {rel} "
+                f"classical-dusthana rule."
+            )
+        else:
+            factor_label = (
+                f"House {hn} — {('primary' if idx == 0 else 'supporting')} "
+                f"(unfavourable, LLM-added)"
+            )
+            origin_note = (
+                "Added by the polarity classifier from the question wording "
+                "(not derivable from the favourable-house formula)."
+            )
+
         evidence.append({
-            "factor": f"House {hn} — {('primary' if idx == 0 else 'supporting')} (unfavourable)",
+            "factor": factor_label,
             "subject": f"{h['sign']}, ruled by {h['lord']}",
             "detail": (
-                f"Opposition house: H{hn} ({h['sign']}). Lord {h['lord']} is in "
-                f"{l['sign']} ({l['nakshatra']} pada {l['pada']}), {l['house']}th house. "
+                f"H{hn} ({h['sign']}). {origin_note} "
+                f"Lord {h['lord']} is in {l['sign']} ({l['nakshatra']} pada {l['pada']}), "
+                f"{l['house']}th house. "
                 f"Condition: {', '.join(notes_u) if notes_u else 'neutral'}. "
                 f"{verdict_hint.capitalize()} (dampened ×{UNFAVOURABLE_DAMPENING})."
             ),
             "score": round(delta, 2),
             "weight": weight_label,
             "lane": "unfavourable",
+            "source": source_tag,
+            "parent_favourable": parent[0] if is_formula else None,
         })
 
     # ------------------------------------------------------------------
@@ -1302,6 +1480,7 @@ def answer(question: str, chart: dict) -> dict:
         natural_karakas=intent["natural_karakas"],
         unfavourable_natural_karakas=intent.get("unfavourable_natural_karakas", []),
         domain_key=intent.get("domain", "general"),
+        negation_map=intent.get("negation_map"),
     )
     verdict = make_verdict(evidence["total_score"])
     synth = synthesize(question, chart, intent, evidence, verdict)
