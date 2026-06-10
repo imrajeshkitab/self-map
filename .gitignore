@@ -50,3 +50,6 @@ out/
 .env.development.local
 .env.production.local
 next-env.d.ts
+
+# Docs
+docs/

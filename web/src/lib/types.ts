@@ -111,6 +111,13 @@ export type EvidenceItem = {
    *  Older audit-log rows from before the migration won't have this — treat
    *  as "favourable" by default. */
   lane?: EvidenceLane;
+  /** Where this unfavourable factor came from (May 28 Durga MOM):
+   *   "formula-6-8-12" — auto-derived 6/8/12-from-favourable (classical dusthana)
+   *   "llm-pick"        — the polarity classifier added it from question wording
+   *   undefined         — older rows, or non-unfavourable items */
+  source?: "formula-6-8-12" | "llm-pick";
+  /** For formula-derived negators, which favourable house produced it. */
+  parent_favourable?: number | null;
 };
 
 export type Verdict = {
@@ -142,6 +149,22 @@ export type HouseCandidate = {
   supporting_tokens: string[];
 };
 
+export type NegatorRow = { house: number; relation: string };
+
+/** Structured negation picture — May 28 Durga MOM "classical 6/8/12 from
+ *  every favourable, merged with LLM picks". Per-favourable rows let the UI
+ *  show "H7 → negated by H12 (6th-from), H2 (8th-from), H6 (12th-from)". */
+export type NegationMap = {
+  /** Keys are favourable house numbers as strings (JSON-friendly). */
+  by_favourable: Record<string, NegatorRow[]>;
+  /** Houses the LLM polarity classifier added that aren't derivable from
+   *  the formula — scored without a parent favourable. */
+  llm_added: number[];
+  /** Union of all unfavourable houses (formula + llm_added), favourables
+   *  removed, deterministically sorted. */
+  all_unfavourable: number[];
+};
+
 export type MappingTrace = {
   tokens: string[];
   /** Stopwords + tokens too short to be meaningful (e.g. articles, pronouns). */
@@ -151,6 +174,9 @@ export type MappingTrace = {
   candidates: HouseCandidate[];
   primary_candidate: number | null;
   match_count: number;
+  /** Per-favourable negation breakdown (post-May-28-MOM). Optional for
+   *  back-compat with older audit-log rows. */
+  negation_map?: NegationMap;
 };
 
 export type UserIntent = "achieve" | "avoid" | "predict" | "decide" | "timing" | "quality";
@@ -195,6 +221,8 @@ export type Intent = {
   llm_reasoning?: string | null;
   /** Full deterministic trace — perfect for the future audit log (MOM #3). */
   mapping?: MappingTrace | null;
+  /** Convenience copy of mapping.negation_map (also stored on intent). */
+  negation_map?: NegationMap | null;
   /** Legacy hint; "general" in the dictionary-driven path. */
   domain: string;
 };
