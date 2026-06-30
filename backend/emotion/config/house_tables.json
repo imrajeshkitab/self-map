@@ -1,0 +1,33 @@
+{
+  "_doc": "House-based tables. natal_moon_house = the natal house the Moon occupies (Step 1, weighted by natal_subweights.house). transit_from_natal_moon = the house the transit Moon occupies counted from the natal Moon sign (Step 4). Canonical dimensions; _spec preserves the spec label.",
+
+  "natal_moon_house": {
+    "1":  { "confidence": 10 },
+    "2":  { "patience": 8 },
+    "3":  { "social_engagement": 8 },
+    "4":  { "attachment": 10 },
+    "5":  { "motivation": 8 },
+    "6":  { "stress": 8 },
+    "7":  { "social_engagement": 10, "_spec": "Relationship Score 70" },
+    "8":  { "sensitivity": 12 },
+    "9":  { "motivation": 8 },
+    "10": { "focus": 8 },
+    "11": { "social_engagement": 8 },
+    "12": { "social_engagement": -8 }
+  },
+
+  "transit_from_natal_moon": {
+    "1":  { "confidence": 10, "_spec": "Self-focus +10" },
+    "2":  { "patience": 8, "_spec": "Security Focus +8" },
+    "3":  { "social_engagement": 8, "_spec": "Communication +8" },
+    "4":  { "attachment": 10, "_spec": "Comfort Seeking +10" },
+    "5":  { "motivation": 8, "_spec": "Creativity +8" },
+    "6":  { "stress": 10, "_spec": "Stress +10" },
+    "7":  { "social_engagement": 10, "_spec": "Relationship Focus +10" },
+    "8":  { "sensitivity": 15, "_spec": "Sensitivity +15" },
+    "9":  { "motivation": 8, "_spec": "Hope +8" },
+    "10": { "focus": 8, "_spec": "Responsibility +8" },
+    "11": { "social_engagement": 8, "_spec": "Social +8" },
+    "12": { "social_engagement": -10, "_spec": "Withdrawal +10" }
+  }
+}

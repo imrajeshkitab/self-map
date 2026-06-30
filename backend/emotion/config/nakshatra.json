@@ -1,0 +1,32 @@
+{
+  "_doc": "Emotional character of each of the 27 nakshatras, in canonical dimensions. Used by the natal Moon nakshatra (Step 1, full weight) and the transit Moon nakshatra (Step 3, scaled). Entries marked _spec are from the specification; the rest are reasoned POC defaults from each nakshatra's classical nature, pending Durga calibration.",
+  "nakshatras": {
+    "Ashwini":          { "impulsiveness": 8, "motivation": 10, "_spec": "Impulsiveness +8, Motivation +10" },
+    "Bharani":          { "impulsiveness": 8, "stress": 6 },
+    "Krittika":         { "motivation": 8, "stress": 6 },
+    "Rohini":           { "attachment": 10, "social_engagement": 8, "_spec": "Attachment +10, Pleasure +8" },
+    "Mrigashira":       { "motivation": 8, "clarity": 6 },
+    "Ardra":            { "stress": 10, "focus": 10, "_spec": "Stress +10, Mental Activity +10" },
+    "Punarvasu":        { "patience": 8, "motivation": 8 },
+    "Pushya":           { "attachment": 10, "patience": 8 },
+    "Ashlesha":         { "sensitivity": 10, "stress": 8 },
+    "Magha":            { "confidence": 10, "attachment": 6 },
+    "Purva Phalguni":   { "social_engagement": 10, "confidence": 6 },
+    "Uttara Phalguni":  { "patience": 8, "confidence": 6 },
+    "Hasta":            { "focus": 10, "clarity": 8 },
+    "Chitra":           { "motivation": 8, "social_engagement": 6 },
+    "Swati":            { "impulsiveness": 10, "confidence": 8, "_spec": "Restlessness +10, Independence +8" },
+    "Vishakha":         { "motivation": 10, "stress": 6 },
+    "Anuradha":         { "social_engagement": 10, "attachment": 8 },
+    "Jyeshtha":         { "stress": 8, "confidence": 6 },
+    "Mula":             { "clarity": 6, "stress": 8 },
+    "Purva Ashadha":    { "confidence": 10, "motivation": 6 },
+    "Uttara Ashadha":   { "patience": 8, "motivation": 8 },
+    "Shravana":         { "focus": 8, "clarity": 8 },
+    "Dhanishta":        { "motivation": 8, "social_engagement": 6 },
+    "Shatabhisha":      { "clarity": 8, "social_engagement": -6 },
+    "Purva Bhadrapada": { "stress": 8, "motivation": 6 },
+    "Uttara Bhadrapada":{ "patience": 10, "sensitivity": 6 },
+    "Revati":           { "sensitivity": 8, "attachment": 10, "_spec": "Empathy +10, Sensitivity +8" }
+  }
+}

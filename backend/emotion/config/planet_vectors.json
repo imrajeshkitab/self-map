@@ -1,0 +1,14 @@
+{
+  "_doc": "Step 2 (DBA climate) and Step 8 (conjunction). Each graha's emotional vector in canonical dimensions. `_spec` preserves the original label from the specification for traceability. Numbers are the spec's magnitudes; Durga tunes.",
+  "vectors": {
+    "Sun":     { "confidence": 30, "motivation": 15, "_spec": "Self-worth +25, Confidence +20" },
+    "Moon":    { "sensitivity": 25, "attachment": 20, "_spec": "Sensitivity +25, Attachment +20" },
+    "Mars":    { "impulsiveness": 25, "stress": 15, "_spec": "Impulsiveness +25, Stress +15" },
+    "Mercury": { "focus": 20, "clarity": 20, "_spec": "Mental Activity +20, Clarity +20" },
+    "Jupiter": { "confidence": 25, "motivation": 30, "_spec": "Confidence +25, Hope +30" },
+    "Venus":   { "social_engagement": 25, "attachment": 15, "_spec": "Relationships +25, Pleasure +20" },
+    "Saturn":  { "stress": 30, "patience": 20, "confidence": -15, "_spec": "Pressure +30, Patience +20, Confidence -15" },
+    "Rahu":    { "stress": 25, "attachment": 30, "clarity": -15, "_spec": "Anxiety +25, Obsession +30, Clarity -15" },
+    "Ketu":    { "attachment": -30, "social_engagement": -20, "_spec": "Detachment +30, Social -20" }
+  }
+}

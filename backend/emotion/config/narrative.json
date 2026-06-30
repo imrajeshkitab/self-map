@@ -1,0 +1,18 @@
+{
+  "_doc": "Step 10. Threshold → sentence rules. Each rule fires when a dimension crosses its threshold. The engine emits all matching lines plus the dominant-theme summary. Lines marked _spec are from the specification.",
+  "rules": [
+    { "dimension": "sensitivity", "op": ">", "value": 80, "text": "The emotional system is highly active today. Reactions may be stronger than usual.", "_spec": true },
+    { "dimension": "stress", "op": ">", "value": 75, "text": "External demands may feel heavier. Prioritise structure and pacing.", "_spec": true },
+    { "dimension": "confidence", "op": ">", "value": 80, "text": "A good day for leadership, decisions and visibility.", "_spec": true },
+    { "dimension": "clarity", "op": "<", "value": 40, "text": "Avoid making major emotional judgments based solely on today's perceptions.", "_spec": true },
+    { "dimension": "attachment", "op": ">", "value": 80, "text": "Relationships and emotional validation may occupy a larger share of mental bandwidth.", "_spec": true },
+    { "dimension": "motivation", "op": ">", "value": 75, "text": "Drive is high — a good day to start or push forward on what matters." },
+    { "dimension": "patience", "op": "<", "value": 40, "text": "Patience is thin today; give yourself extra margin before reacting." },
+    { "dimension": "impulsiveness", "op": ">", "value": 75, "text": "Impulses run strong — pause before committing to anything irreversible." },
+    { "dimension": "social_engagement", "op": ">", "value": 75, "text": "Connection feels easy today — lean into people and conversation." },
+    { "dimension": "social_engagement", "op": "<", "value": 35, "text": "A more inward day; solitude may feel more natural than company." },
+    { "dimension": "focus", "op": ">", "value": 75, "text": "Concentration is sharp — protect a block of deep work." },
+    { "dimension": "stress", "op": "<", "value": 35, "text": "An unusually calm baseline today — good for rest and recovery." }
+  ],
+  "chandra_ashtama_line": "This is a Chandra Ashtama day (the Moon is in the 8th from your natal Moon). Energy may dip; keep the day light and avoid major decisions."
+}
