@@ -4,6 +4,7 @@ const links = [
   { href: "/",        label: "Search" },
   { href: "/today",   label: "Today's Sky" },
   { href: "/ask",     label: "Ask the Moment" },
+  { href: "/daily-theme-v2", label: "Daily Theme v2" },
   { href: "/browse",  label: "Browse" },
   { href: "/admin/audit", label: "Logs" },
 ];

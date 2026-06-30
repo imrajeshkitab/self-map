@@ -1,0 +1,65 @@
+{
+  "_doc": "Structural knobs for the Daily Emotional Analysis Engine. All weights live here so an astrologer can retune without touching code. Magnitudes are starting values pending Durga calibration — this engine is a designed psychological model, NOT a verse-cited transcription.",
+
+  "dimensions": [
+    "sensitivity", "stress", "confidence", "clarity", "motivation",
+    "attachment", "patience", "impulsiveness", "social_engagement", "focus"
+  ],
+  "baseline": 50,
+  "clamp": { "min": 0, "max": 100 },
+
+  "_alias_doc": "The spec used loose emotional labels in its examples. Each maps to one canonical dimension here, so the config can be authored in the canonical vocabulary. Durga can re-point any alias.",
+  "aliases": {
+    "stability": "patience", "nurturing": "attachment", "practicality": "focus",
+    "emotional_expression": "sensitivity", "hope": "motivation", "pleasure": "social_engagement",
+    "relationships": "social_engagement", "pressure": "stress", "anxiety": "stress",
+    "obsession": "attachment", "detachment": "attachment", "self_worth": "confidence",
+    "mental_activity": "focus", "self_focus": "confidence", "security_focus": "patience",
+    "communication": "social_engagement", "creativity": "motivation", "responsibility": "patience",
+    "withdrawal": "social_engagement", "comfort": "patience", "achievement": "motivation",
+    "harmony": "social_engagement", "resistance": "stress", "independence": "confidence",
+    "empathy": "sensitivity", "restlessness": "impulsiveness", "emotional_restraint": "patience"
+  },
+
+  "layer_weights": {
+    "_doc": "Step: Final Emotional Formula. natal 0.30 + dba 0.40 + transit 0.30.",
+    "natal": 0.30, "dba": 0.40, "transit": 0.30
+  },
+
+  "intensity_gain": {
+    "_doc": "Global gain on the weighted layer sum before adding to the 50 baseline. Counteracts the compression from layer-weights + sub-weights so a genuinely strong factor reaches the 75-90 range the spec intends (its Step 9 example hits 92), while ordinary dimensions stay near 50. Raise for more dramatic days, lower for subtler ones.",
+    "value": 3.0
+  },
+
+  "natal_subweights": {
+    "_doc": "Step 1. How the natal layer is composed from Moon sign / nakshatra / house / aspects.",
+    "sign": 0.30, "nakshatra": 0.40, "house": 0.20, "aspect": 0.10
+  },
+
+  "dba_subweights": {
+    "_doc": "Step 2 / DBA Weighting. Mahadasha 0.50, Bhukti 0.30, Antara 0.20.",
+    "mahadasha": 0.50, "bhukti": 0.30, "antara": 0.20
+  },
+
+  "transit_scale": {
+    "_doc": "Daily transit deltas are gentler than the natal-baseline character. The shared sign/nakshatra tables are scaled down when used as a transit trigger (Step 3).",
+    "sign": 0.6, "nakshatra": 0.6
+  },
+
+  "nakshatra_lord_amplification": {
+    "_doc": "Step 5. If the transit Moon's nakshatra lord is also a current DBA lord, that planet's DBA contribution is multiplied. Per the spec, Bhukti placement amplifies most.",
+    "mahadasha": 1.25, "bhukti": 1.50, "antara": 1.20
+  },
+
+  "conjunction": {
+    "_doc": "Step 8. Transit Moon within orb of a natal planet that is a current DBA lord multiplies that planet's DBA contribution.",
+    "orb_degrees": 5.0,
+    "factor_default": 1.25,
+    "factor_overrides": { "Rahu": 1.50, "Ketu": 1.50 }
+  },
+
+  "chandra_ashtama": {
+    "_doc": "Step 7. Transit Moon in the 8th from natal Moon. Deltas applied in the transit layer; a flag is set for the narrative.",
+    "deltas": { "stress": 15, "sensitivity": 10, "confidence": -10, "clarity": -5 }
+  }
+}

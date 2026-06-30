@@ -1,0 +1,17 @@
+{
+  "_doc": "Emotional character of each rashi, in canonical dimensions. Used by the natal Moon sign (Step 1, full weight) and the transit Moon sign (Step 3, scaled by transit_scale.sign). Signs marked _spec are from the specification; the rest are reasoned POC defaults pending Durga.",
+  "signs": {
+    "Aries":       { "impulsiveness": 12, "motivation": 8 },
+    "Taurus":      { "patience": 14, "stress": -8, "_spec": "Stability 80" },
+    "Gemini":      { "focus": 10, "social_engagement": 8 },
+    "Cancer":      { "sensitivity": 12, "attachment": 10, "_spec": "Sensitivity +10, Nurturing +8" },
+    "Leo":         { "confidence": 14, "social_engagement": 8 },
+    "Virgo":       { "clarity": 12, "focus": 8 },
+    "Libra":       { "social_engagement": 12, "patience": 6 },
+    "Scorpio":     { "sensitivity": 15, "stress": 10, "_spec": "Sensitivity +15, Stress +10" },
+    "Sagittarius": { "motivation": 12, "confidence": 8 },
+    "Capricorn":   { "focus": 12, "sensitivity": -10, "_spec": "Practicality +10, Emotional Expression -10" },
+    "Aquarius":    { "clarity": 8, "social_engagement": 8 },
+    "Pisces":      { "sensitivity": 14, "clarity": -6 }
+  }
+}

@@ -26,6 +26,7 @@ from dasha_table import DASHA_TENURE, DASHA_YEARS, VIMSHOTTARI_ORDER
 from dasha_analysis import analyze_dasha
 import audit_log
 import datetime as _dt
+from emotion.routes import router as emotion_router
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "vedic_astrology.db")
 
@@ -45,6 +46,10 @@ app.add_middleware(
 
 # Initialize the audit DB (idempotent — creates table + indexes if missing).
 audit_log.init_db()
+
+# Daily Emotional Analysis Engine (feat/emotional-engine) — self-contained
+# package; only the routes mount here. Serves /emotion/daily.
+app.include_router(emotion_router)
 
 
 # ---------------------------------------------------------------------------

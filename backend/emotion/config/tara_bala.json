@@ -1,0 +1,15 @@
+{
+  "_doc": "Step 6. The 9-fold Tara Bala cycle, counted from the natal Moon nakshatra to the transit Moon nakshatra. tara_number = ((transit_index - natal_index) mod 27) + 1; category = ((tara_number - 1) mod 9). Canonical dimensions; _spec preserves the spec label.",
+  "category_order": ["Janma", "Sampat", "Vipat", "Kshema", "Pratyak", "Sadhaka", "Naidhana", "Mitra", "Parama Mitra"],
+  "categories": {
+    "Janma":        { "sensitivity": 10, "_spec": "Sensitivity +10" },
+    "Sampat":       { "confidence": 10, "_spec": "Confidence +10" },
+    "Vipat":        { "stress": 10, "_spec": "Stress +10" },
+    "Kshema":       { "patience": 10, "_spec": "Comfort +10" },
+    "Pratyak":      { "stress": 8, "_spec": "Resistance +8" },
+    "Sadhaka":      { "motivation": 10, "_spec": "Achievement +10" },
+    "Naidhana":     { "sensitivity": 15, "_spec": "Sensitivity +15" },
+    "Mitra":        { "social_engagement": 10, "_spec": "Social +10" },
+    "Parama Mitra": { "social_engagement": 12, "_spec": "Harmony +12" }
+  }
+}
